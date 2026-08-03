@@ -3,6 +3,7 @@
 numpy>=1.26,<3
 pandas>=2.2,<3
 pyarrow>=16.1,<18      # parquet read/write for fast local artifacts and UI load times
+pandera>=0.21,<1       # dataframe schema validation for read-only data/ checks
 
 # LLM
 openai>=1.30,<2        # off-the-shelf LLM API client (provider assumed configurable in v1)
@@ -24,4 +25,3 @@ PyYAML>=6.0.1,<7       # config.yaml parsing for non-secret defaults
 
 # testing
 pytest>=8.2,<9
-

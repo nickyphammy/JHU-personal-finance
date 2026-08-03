@@ -1,8 +1,13 @@
-# ClearLedger — Personal Finance Coach v1
+# ClearLedger — Personal Finance Coach
+
+ClearLedger is a subscription personal finance app facing high early churn because users must manually tag dozens of transactions before seeing value. This project implements a **Personal Finance Coach** that ingests a user’s bank CSV, auto-categorizes transactions with an LLM (no manual tagging), renders an interactive spending dashboard, predicts days remaining before the monthly discretionary limit is hit, ranks category-level spending reductions, and exposes those grounded insights in a multi-turn AI coach.
+
+V1 runs locally with Streamlit, keeps source data under `data/` read-only, and writes all derived outputs under `artifacts/`.
 
 ## Pipeline
+
 1. Read source datasets from `data/` (transactions, cards, users, MCC lookup) **read-only**.
-2. Clean + standardize types (currency/date), dedupe, and join into a unified dataset.
+2. Validate schemas, clean/standardize types (currency/date), dedupe, and join into a unified dataset.
 3. Categorize transactions with an LLM (batched) with caching; fall back to MCC rules if needed.
 4. Compute analytics (spend by category, budget utilization, trends).
 5. Train/infer a regression model to predict **days-to-limit** for the monthly discretionary budget.
@@ -10,93 +15,136 @@
 7. Emit notification events at 70% / 85% / 95% utilization (v1: in-app display only).
 8. Launch Streamlit dashboard + multi-turn coach grounded in computed artifacts + local memory.
 
-**All source data is read from the existing `data/` folder only.**
-No source file is ever modified in place, and nothing is downloaded. All derived artifacts (cleaned datasets, caches, models, metrics, recommendations, chat state, logs) are written under `artifacts/` so runs are reproducible and the original dataset remains unchanged.
+**All source data is read from the existing `data/` folder only.** No source file is modified in place, and nothing is downloaded. All derived artifacts (cleaned datasets, caches, models, metrics, recommendations, chat state, logs) are written under `artifacts/`.
 
 ## Project Structure
-(Proposed; will be created in implementation phase.)
+
+Target implementation layout (domain folders instead of a nested `src/` package):
 
 ```
-data/                  # Existing read-only inputs
-artifacts/             # Derived outputs only (written by pipeline)
-src/                   # Pipeline modules + Streamlit app
-tests/                 # Unit/integration tests
-PROJECT_SPEC.md        # Detailed design spec
-README.md              # This runbook
-requirements.txt       # Python dependencies
+.
+├── data/                         # Existing read-only inputs
+│   ├── transactions.csv
+│   ├── cards.csv
+│   ├── users.csv
+│   └── mcc_codes.json
+├── artifacts/                    # Derived outputs only (written by pipeline)
+│   ├── clean/
+│   ├── cache/
+│   ├── analytics/
+│   ├── models/
+│   ├── metrics/
+│   ├── recommendations/
+│   ├── notifications/
+│   ├── chat/
+│   └── logs/
+├── data_processing/              # Schema validation, cleaning, joins, LLM categorization
+│   ├── validate_schema.py
+│   ├── clean.py
+│   ├── categorize.py
+│   └── run.py
+├── model/                        # Analytics, prediction, recommendations, notifications
+│   ├── analytics.py
+│   ├── predict.py
+│   ├── recommend.py
+│   ├── notify.py
+│   └── run.py
+├── ui/                           # Streamlit dashboard + coach
+│   ├── app.py
+│   ├── dashboard.py
+│   └── coach.py
+├── tests/                        # Unit / integration / validation hooks
+├── config.yaml                   # Non-secret defaults
+├── .env                          # Secrets (not committed)
+├── requirements.txt
+├── PROJECT_SPEC.md
+├── README.md
+└── codex_trail.txt
 ```
 
-## Run (Python)
+## Execution Steps
 
 ### Prerequisites
+
 - Python 3.11+
 - Local access to the existing `data/` folder (already present)
 
 ### Virtual environment
+
 ```sh
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### `.env` setup (planned)
-Create a `.env` file (never committed) with at minimum:
-- `LLM_PROVIDER=openai` *(planned default)*
-- `LLM_API_KEY=...`
-- `LLM_MODEL=gpt-4o-mini` *(planned default; configurable)*
-- `DATA_DIR=data`
-- `ARTIFACTS_DIR=artifacts`
-- `CLIENT_ID_DEFAULT=1696`
+### `.env` setup
 
-### Commands (Phase 0 note)
-This repo is currently **Phase 0 (documentation only)**. The following commands are **planned** and do not exist yet:
+Create a `.env` file in the project root (never commit it) with at minimum:
 
 ```sh
-# planned: run the full pipeline for a single client
-python -m clearledger.pipeline run --client-id 1696
-
-# planned: launch Streamlit UI (dashboard + coach)
-streamlit run src/ui/app.py -- --client-id 1696
+LLM_PROVIDER=openai
+LLM_API_KEY=...
+LLM_MODEL=gpt-4o-mini
+DATA_DIR=data
+ARTIFACTS_DIR=artifacts
+CLIENT_ID_DEFAULT=1696
 ```
 
+Optional: set `AS_OF_DATE=YYYY-MM-DD` to override the default “today” (user’s max transaction date).
+
+### Pipeline and UI commands
+
+Run from the project root after activating the virtual environment. Pipeline modules are the intended entrypoints once implemented:
+
+```sh
+# Stage 1: validate, clean/join, and categorize for a single client
+python -m data_processing.run --client-id 1696
+
+# Stage 2: analytics, days-to-limit prediction, recommendations, notifications
+python -m model.run --client-id 1696
+
+# Launch Streamlit UI (dashboard + coach)
+streamlit run ui/app.py -- --client-id 1696
+```
+
+Demo user for screenshots and submission PDFs: **`client_id = 1696`**.
+
 ## Output Files
-All outputs are derived artifacts written under `artifacts/` (never under `data/`). Exact filenames are part of the implementation contract:
 
-- `artifacts/clean/transactions_enriched_{client_id}.parquet` (or `.csv`) — Processing
-- `artifacts/clean/qa_report_{client_id}.json` — Processing
-- `artifacts/cache/categorized_{client_id}.jsonl` — Categorization
-- `artifacts/analytics/spend_by_category_{client_id}.json` — Analytics
-- `artifacts/analytics/budget_utilization_{client_id}.json` — Analytics
-- `artifacts/analytics/runway_{client_id}.json` — Prediction
-- `artifacts/models/ridge_{client_id}.pkl` — Prediction
-- `artifacts/metrics/prediction_{client_id}.json` — Prediction
-- `artifacts/recommendations/recommendations_{client_id}.json` — Recommendations
-- `artifacts/notifications/events_{client_id}.jsonl` — Notifications
-- `artifacts/chat/session_{client_id}.json` — Coach (stateful memory)
-- `artifacts/logs/pipeline_{client_id}.log` — Pipeline runner
+All outputs are derived artifacts under `artifacts/` (never under `data/`). Contract filenames:
 
-## Current Guardrail Definition
-V1 guardrails (must be enforced in prompts and UI):
-- No personalized investment, tax, or legal advice. Refuse and redirect to budget/spend analysis.
-- Coach answers restricted to the user’s own grounded data (computed artifacts and summaries).
-- Refusal behavior when asked outside available data (e.g., “Which stocks should I buy?”).
-- No fabricated numbers: every numeric claim must trace to computed values in artifacts.
-- Spending limit definition: `monthly_discretionary_limits` from `data/users.csv` after currency parsing.
-- Threshold alerts: 70%, 85%, 95% of monthly discretionary limit (based on MTD discretionary spend).
-- PII handling:
-  - Do not expose `address`, `card_number`, `cvv` in UI, logs, prompts, or derived artifacts.
-  - Use `client_id` as the primary identifier.
-- LLM cost and rate-limit caps:
-  - Batch requests; cache results; enforce a configured daily cost cap; degrade gracefully when capped.
-- Fallback behavior on API failure:
-  - Categorization uses deterministic MCC mapping + `Other/Uncategorized` fallback.
-  - Coach disables free-form chat and presents deterministic analytics + recommendations from artifacts.
+| Artifact | Produced by |
+|---|---|
+| `artifacts/clean/transactions_enriched_{client_id}.parquet` (or `.csv`) | `data_processing/clean.py` |
+| `artifacts/clean/qa_report_{client_id}.json` | `data_processing/clean.py` |
+| `artifacts/cache/categorized_{client_id}.jsonl` | `data_processing/categorize.py` |
+| `artifacts/analytics/spend_by_category_{client_id}.json` | `model/analytics.py` |
+| `artifacts/analytics/budget_utilization_{client_id}.json` | `model/analytics.py` |
+| `artifacts/analytics/runway_{client_id}.json` | `model/predict.py` |
+| `artifacts/models/ridge_{client_id}.pkl` | `model/predict.py` |
+| `artifacts/metrics/prediction_{client_id}.json` | `model/predict.py` |
+| `artifacts/metrics/schema_validation.json` | `data_processing/validate_schema.py` |
+| `artifacts/recommendations/recommendations_{client_id}.json` | `model/recommend.py` |
+| `artifacts/notifications/events_{client_id}.jsonl` | `model/notify.py` |
+| `artifacts/chat/session_{client_id}.json` | `ui/coach.py` |
+| `artifacts/logs/pipeline_{client_id}.log` | Stage runners |
+
+## Guardrails
+
+V1 guardrails enforced in prompts, pipeline config, and UI:
+
+- **No investment, tax, or legal advice.** Refuse and redirect to budget/spend analysis.
+- **Grounded answers only.** Coach responses are restricted to the user’s own computed artifacts and summaries.
+- **Refuse outside available data** (e.g. “Which stocks should I buy?”).
+- **No fabricated numbers.** Every numeric claim must trace to values in `artifacts/`.
+- **Spending limit definition.** `monthly_discretionary_limits` from `data/users.csv` after currency parsing.
+- **Threshold alerts.** 70%, 85%, 95% of monthly discretionary limit based on MTD discretionary spend.
+- **PII handling.** Do not expose `address`, `card_number`, or `cvv` in UI, logs, prompts, or derived artifacts. Use `client_id` as the primary identifier.
+- **LLM cost and rate-limit caps.** Batch requests; cache results; enforce a configured daily cost cap; degrade gracefully when capped.
+- **Fallback on API failure.** Categorization uses deterministic MCC mapping + `Other/Uncategorized`. Coach disables free-form chat and presents deterministic analytics + recommendations from artifacts.
 
 ## Notes
-- Demo user for screenshots/examples: `client_id = 1696`.
-- Data is historical (2010s); “today” is defined relative to `AS_OF_DATE` (default: user’s max transaction date).
-- [VERIFY] Final category taxonomy and discretionary/non-discretionary mapping before implementation.
-- Known gaps (to address in implementation phase):
-  - Categorizations evaluation harness (spot checks + MCC agreement metrics).
-  - Cold-start policy for prediction when insufficient history.
 
+- Data is historical (2010s); “today” is defined relative to `AS_OF_DATE` (default: user’s max transaction date).
+- See [PROJECT_SPEC.md](PROJECT_SPEC.md) for full architecture, schemas, module responsibilities, and evaluation checklist.
+- Known implementation follow-ups: categorization evaluation harness (spot checks + MCC agreement) and cold-start policy details for prediction when history is thin.
