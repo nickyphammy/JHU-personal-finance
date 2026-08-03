@@ -68,31 +68,20 @@ Inputs are read only from `data/`. All derived outputs are written under `artifa
 │   ├── cards.csv
 │   ├── users.csv
 │   └── mcc_codes.json
-├── artifacts/                    # Derived outputs only (write-only)
-│   ├── clean/
-│   ├── cache/
-│   ├── analytics/
-│   ├── models/
-│   ├── metrics/
-│   ├── recommendations/
-│   ├── notifications/
-│   ├── chat/
-│   └── logs/
+├── artifacts/                    # Derived outputs only (write-only, flat files)
 ├── data_processing/              # Schema validation, cleaning, joins, LLM categorization
-│   ├── validate_schema.py
-│   ├── clean.py
-│   ├── categorize.py
-│   └── run.py                    # Stage entrypoint
+│   ├── validate_schema.ipynb
+│   ├── clean.ipynb               # planned
+│   ├── categorize.ipynb          # planned
 ├── model/                        # Analytics, prediction, recommendations, notifications
-│   ├── analytics.py
-│   ├── predict.py
-│   ├── recommend.py
-│   ├── notify.py
-│   └── run.py                    # Stage entrypoint
+│   ├── analytics.ipynb           # planned
+│   ├── predict.ipynb             # planned
+│   ├── recommend.ipynb           # planned
+│   └── notify.ipynb              # planned
 ├── ui/                           # Streamlit dashboard + multi-turn coach
-│   ├── app.py
-│   ├── dashboard.py
-│   └── coach.py
+│   ├── app.ipynb                 # planned
+│   ├── dashboard.ipynb           # planned
+│   └── coach.ipynb               # planned
 ├── tests/                        # Unit, integration, and validation hooks
 ├── config.yaml                   # Non-secret defaults (paths, thresholds, taxonomy)
 ├── .env                          # Secrets (never committed)
@@ -107,7 +96,7 @@ Placement rules (business-justified):
 | Concern | Location | Why |
 |---|---|---|
 | Schema validation, cleaning, joins, MCC enrichment | `data_processing/` | Trustworthy foundation without mutating source CSVs |
-| LLM auto-categorization + MCC fallback + cache | `data_processing/categorize.py` | Categorization is data prep that unlocks time-to-first-insight; not the sklearn model |
+| LLM auto-categorization + MCC fallback + cache | `data_processing/categorize.ipynb` | Categorization is data prep that unlocks time-to-first-insight; not the sklearn model |
 | Spend analytics, runway prediction, ranked recommendations, 70/85/95 alerts | `model/` | Intelligence outputs that feed the UI/coach from cleaned data |
 | Dashboard + grounded chat memory | `ui/` | Presentation and stateful coaching; reads artifacts only |
 
@@ -158,14 +147,14 @@ Placement rules (business-justified):
 
 | Stage | Module | Responsibility | Primary artifacts |
 |---|---|---|---|
-| Ingestion / validation | `data_processing/validate_schema.py` | Load read-only sources; enforce expected columns/types; fail fast on schema drift | `artifacts/metrics/schema_validation.json` |
-| Processing | `data_processing/clean.py` | Parse currency/dates, dedupe, join users/cards/MCC, write enriched frame + QA report | `artifacts/clean/transactions_enriched_{client_id}.*`, `artifacts/clean/qa_report_{client_id}.json` |
-| Categorization | `data_processing/categorize.py` | Batched LLM categorization with disk cache; MCC-based fallback on outage/cap | `artifacts/cache/categorized_{client_id}.jsonl` |
-| Analytics | `model/analytics.py` | Category spend, MTD discretionary, budget utilization, trends | `artifacts/analytics/spend_by_category_{client_id}.json`, `budget_utilization_{client_id}.json` |
-| Prediction | `model/predict.py` | Per-user regression for days-to-limit / projected month-end spend; cold-start fallback | `artifacts/models/ridge_{client_id}.pkl`, `artifacts/analytics/runway_{client_id}.json`, `artifacts/metrics/prediction_{client_id}.json` |
-| Recommendations | `model/recommend.py` | Ranked category-level reductions with computed “days gained” impact | `artifacts/recommendations/recommendations_{client_id}.json` |
-| Notifications | `model/notify.py` | Emit 70% / 85% / 95% utilization events (v1: in-app) | `artifacts/notifications/events_{client_id}.jsonl` |
-| UI + coach | `ui/app.py`, `dashboard.py`, `coach.py` | Streamlit dashboard + multi-turn grounded coach with local session memory | `artifacts/chat/session_{client_id}.json` |
+| Ingestion / validation | `data_processing/validate_schema.ipynb` | Load read-only sources; enforce expected columns/types; fail fast on schema drift | `artifacts/schema_validation.json` |
+| Processing | `data_processing/clean.ipynb` | Parse currency/dates, dedupe, join users/cards/MCC, write enriched frame + QA report | `artifacts/transactions_enriched_{client_id}.*`, `artifacts/qa_report_{client_id}.json` |
+| Categorization | `data_processing/categorize.ipynb` | Batched LLM categorization with disk cache; MCC-based fallback on outage/cap | `artifacts/categorized_{client_id}.jsonl` |
+| Analytics | `model/analytics.ipynb` | Category spend, MTD discretionary, budget utilization, trends | `artifacts/spend_by_category_{client_id}.json`, `artifacts/budget_utilization_{client_id}.json` |
+| Prediction | `model/predict.ipynb` | Per-user regression for days-to-limit / projected month-end spend; cold-start fallback | `artifacts/ridge_{client_id}.pkl`, `artifacts/runway_{client_id}.json`, `artifacts/prediction_{client_id}.json` |
+| Recommendations | `model/recommend.ipynb` | Ranked category-level reductions with computed “days gained” impact | `artifacts/recommendations_{client_id}.json` |
+| Notifications | `model/notify.ipynb` | Emit 70% / 85% / 95% utilization events (v1: in-app) | `artifacts/events_{client_id}.jsonl` |
+| UI + coach | `ui/app.ipynb`, `ui/dashboard.ipynb`, `ui/coach.ipynb` | Streamlit dashboard + multi-turn grounded coach with local session memory | `artifacts/session_{client_id}.json` |
 
 **Critical degradation path:** if the LLM API is unreachable or the daily cost cap is hit → categorize via deterministic MCC mapping (plus `Other/Uncategorized`) and switch the coach to deterministic “status” mode that only presents computed analytics and recommendations (no free-form invention).
 
@@ -201,11 +190,11 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 ## Implementation Checklist
 
 - [ ] Confirm `data/` schemas match this spec; document any drift and update join keys/handling rules.
-- [ ] Implement `data_processing/validate_schema.py` and `clean.py` → `artifacts/clean/` + QA report.
-- [ ] Implement `data_processing/categorize.py` with batching, caching, and MCC fallback; verify 100% transaction coverage.
-- [ ] Implement `model/analytics.py` so all dashboard figures are reproducible from artifacts.
-- [ ] Implement `model/predict.py` (days-to-limit / projected month-end) with cold-start fallback; write metrics under `artifacts/metrics/`.
-- [ ] Implement `model/recommend.py` with deterministic impact ranking (“days gained”).
-- [ ] Implement `model/notify.py` for 70/85/95 events under `artifacts/notifications/`.
-- [ ] Implement `ui/` (dashboard + coach) reading only `artifacts/`; persist chat under `artifacts/chat/`; show degraded mode on LLM outage.
+- [ ] Implement `data_processing/validate_schema.ipynb` and `data_processing/clean.ipynb` → flat artifact files under `artifacts/` + QA report.
+- [ ] Implement `data_processing/categorize.ipynb` with batching, caching, and MCC fallback; verify 100% transaction coverage.
+- [ ] Implement `model/analytics.ipynb` so all dashboard figures are reproducible from artifacts.
+- [ ] Implement `model/predict.ipynb` (days-to-limit / projected month-end) with cold-start fallback; write metrics as flat files under `artifacts/`.
+- [ ] Implement `model/recommend.ipynb` with deterministic impact ranking (“days gained”).
+- [ ] Implement `model/notify.ipynb` for 70/85/95 events as flat files under `artifacts/`.
+- [ ] Implement `ui/` (dashboard + coach) reading only `artifacts/`; persist chat as a flat file under `artifacts/`; show degraded mode on LLM outage.
 - [ ] Add `tests/`: read-only guarantee for `data/`, schema checks, artifact contracts, end-to-end smoke for `client_id=1696`.
