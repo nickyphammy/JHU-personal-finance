@@ -1,0 +1,27 @@
+
+# core/data
+numpy>=1.26,<3
+pandas>=2.2,<3
+pyarrow>=16.1,<18      # parquet read/write for fast local artifacts and UI load times
+
+# LLM
+openai>=1.30,<2        # off-the-shelf LLM API client (provider assumed configurable in v1)
+tiktoken>=0.7,<1       # token estimation/budgeting for prompt construction
+tenacity>=8.3,<9       # retries with exponential backoff for API calls and transient failures
+diskcache>=5.6,<6      # local caching for per-transaction categorization results across reruns
+
+# ML
+scikit-learn>=1.5,<2   # ridge regression + validation metrics for single-user forecasting
+
+# visualization/UI
+streamlit>=1.36,<2
+plotly>=5.22,<6        # interactive charts (category spend, trends, gauges)
+
+# config
+python-dotenv>=1.0,<2  # load .env without committing secrets
+pydantic>=2.8,<3       # typed config + validation (schemas, guardrails, thresholds)
+PyYAML>=6.0.1,<7       # config.yaml parsing for non-secret defaults
+
+# testing
+pytest>=8.2,<9
+
