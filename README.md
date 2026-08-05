@@ -28,31 +28,20 @@ Target implementation layout (domain folders instead of a nested `src/` package)
 │   ├── cards.csv
 │   ├── users.csv
 │   └── mcc_codes.json
-├── artifacts/                    # Derived outputs only (written by pipeline)
-│   ├── clean/
-│   ├── cache/
-│   ├── analytics/
-│   ├── models/
-│   ├── metrics/
-│   ├── recommendations/
-│   ├── notifications/
-│   ├── chat/
-│   └── logs/
+├── artifacts/                    # Derived outputs only (written by pipeline, flat files)
 ├── data_processing/              # Schema validation, cleaning, joins, LLM categorization
-│   ├── validate_schema.py
-│   ├── clean.py
-│   ├── categorize.py
-│   └── run.py
+│   ├── validate_schema.ipynb
+│   ├── clean.ipynb
+│   └── categorize.ipynb          # planned
 ├── model/                        # Analytics, prediction, recommendations, notifications
-│   ├── analytics.py
-│   ├── predict.py
-│   ├── recommend.py
-│   ├── notify.py
-│   └── run.py
+│   ├── analytics.ipynb           # planned
+│   ├── predict.ipynb             # planned
+│   ├── recommend.ipynb           # planned
+│   └── notify.ipynb              # planned
 ├── ui/                           # Streamlit dashboard + coach
-│   ├── app.py
-│   ├── dashboard.py
-│   └── coach.py
+│   ├── app.ipynb                 # planned
+│   ├── dashboard.ipynb           # planned
+│   └── coach.ipynb               # planned
 ├── tests/                        # Unit / integration / validation hooks
 ├── config.yaml                   # Non-secret defaults
 ├── .env                          # Secrets (not committed)
@@ -97,14 +86,11 @@ Optional: set `AS_OF_DATE=YYYY-MM-DD` to override the default “today” (user�
 Run from the project root after activating the virtual environment. Pipeline modules are the intended entrypoints once implemented:
 
 ```sh
-# Stage 1: validate, clean/join, and categorize for a single client
-python -m data_processing.run --client-id 1696
-
-# Stage 2: analytics, days-to-limit prediction, recommendations, notifications
-python -m model.run --client-id 1696
-
-# Launch Streamlit UI (dashboard + coach)
-streamlit run ui/app.py -- --client-id 1696
+# Current workflow (notebook-first):
+# 1) Open and run: data_processing/validate_schema.ipynb
+# 2) Open and run: data_processing/clean.ipynb (set CLIENT_ID at the top)
+#
+# Planned: model/* and ui/* notebooks and runnable CLI entrypoints (see PROJECT_SPEC.md)
 ```
 
 Demo user for screenshots and submission PDFs: **`client_id = 1696`**.
@@ -115,19 +101,9 @@ All outputs are derived artifacts under `artifacts/` (never under `data/`). Cont
 
 | Artifact | Produced by |
 |---|---|
-| `artifacts/clean/transactions_enriched_{client_id}.parquet` (or `.csv`) | `data_processing/clean.py` |
-| `artifacts/clean/qa_report_{client_id}.json` | `data_processing/clean.py` |
-| `artifacts/cache/categorized_{client_id}.jsonl` | `data_processing/categorize.py` |
-| `artifacts/analytics/spend_by_category_{client_id}.json` | `model/analytics.py` |
-| `artifacts/analytics/budget_utilization_{client_id}.json` | `model/analytics.py` |
-| `artifacts/analytics/runway_{client_id}.json` | `model/predict.py` |
-| `artifacts/models/ridge_{client_id}.pkl` | `model/predict.py` |
-| `artifacts/metrics/prediction_{client_id}.json` | `model/predict.py` |
-| `artifacts/metrics/schema_validation.json` | `data_processing/validate_schema.py` |
-| `artifacts/recommendations/recommendations_{client_id}.json` | `model/recommend.py` |
-| `artifacts/notifications/events_{client_id}.jsonl` | `model/notify.py` |
-| `artifacts/chat/session_{client_id}.json` | `ui/coach.py` |
-| `artifacts/logs/pipeline_{client_id}.log` | Stage runners |
+| `artifacts/schema_validation.json` | `data_processing/validate_schema.ipynb` |
+| `artifacts/transactions_enriched_{client_id}.json` | `data_processing/clean.ipynb` |
+| `artifacts/qa_report_{client_id}.json` | `data_processing/clean.ipynb` |
 
 ## Guardrails
 
