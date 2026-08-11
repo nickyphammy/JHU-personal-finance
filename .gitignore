@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# macOS
+.DS_Store
+
+# Large / regenerable pipeline artifacts (keep small focus exports if needed)
+artifacts/transactions_enriched.json
+artifacts/*.parquet
+artifacts/*.pkl

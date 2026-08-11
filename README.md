@@ -97,13 +97,13 @@ Demo user for screenshots and submission PDFs: **`client_id = 1696`**.
 
 ## Output Files
 
-All outputs are derived artifacts under `artifacts/` (never under `data/`). Contract filenames:
+All outputs are derived artifacts under `artifacts/` (never under `data/`). Current clean-stage contract:
 
-| Artifact | Produced by |
-|---|---|
-| `artifacts/schema_validation.json` | `data_processing/validate_schema.ipynb` |
-| `artifacts/transactions_enriched_{client_id}.json` | `data_processing/clean.ipynb` |
-| `artifacts/qa_report_{client_id}.json` | `data_processing/clean.ipynb` |
+| Artifact | Produced by | Notes |
+|---|---|---|
+| `artifacts/transactions_enriched.json` | `data_processing/clean.ipynb` | NDJSON for **all users** (large; local / gitignored) |
+| `artifacts/transactions_enriched_1696.json` | `data_processing/clean.ipynb` | Pretty JSON focus export for demo user 1696 |
+| `artifacts/qa_report.json` | `data_processing/clean.ipynb` | QA counters + cleaning assumptions |
 
 ## Guardrails
 
