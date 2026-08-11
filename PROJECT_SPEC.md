@@ -2,9 +2,16 @@
 
 ## Introduction
 
-ClearLedger’s Personal Finance Coach & Spending Analyzer is a Python application that turns raw bank transactions into actionable guidance without manual tagging. A user (or demo operator) supplies transaction history via CSV; the system auto-categorizes every row with an off-the-shelf LLM, renders an interactive spending dashboard, predicts how many days remain before the user’s monthly discretionary limit is breached, ranks category-level spending reductions to extend that runway, and surfaces those grounded numbers inside a multi-turn conversational coach.
+ClearLedger’s Personal Finance Coach & Spending Analyzer is a Python application that turns raw bank transactions into actionable guidance without manual tagging. To address early churn from manual tagging, ClearLedger’s product plan combines:
 
-V1 is scoped for a six-week build: local Streamlit deployment, no model fine-tuning, and a single coherent pipeline that demonstrates four AI capabilities together—LLM classification, interactive visualization, regression-based prediction, and stateful coach memory—rather than four disconnected exercises.
+1. **LLM-based transaction auto-categorization** — eliminate manual tagging
+2. **Spending analytics** — category spend, budget utilization, interactive dashboard visuals
+3. **Anomaly detection** — flag unusual transactions and budget-threshold / overspend risk before the limit is breached
+4. **Conversational financial coaching** — multi-turn grounded Q&A and action recommendations
+
+A user (or demo operator) supplies transaction history via CSV; the system auto-categorizes every row with an off-the-shelf LLM, renders an interactive spending dashboard, detects unusual spend and limit-breach risk, predicts how many days remain before the user’s monthly discretionary limit is breached, ranks category-level spending reductions to extend that runway, and surfaces those grounded numbers inside a multi-turn conversational coach.
+
+V1 is scoped for a six-week build: local Streamlit deployment, no model fine-tuning, and a single coherent pipeline. The graded learning objective still requires four AI capabilities integrated end-to-end—LLM classification, interactive visualization, regression-based prediction, and stateful coach memory—while anomaly detection is delivered as part of the analytics/prediction/notification path (unusual-txn heuristics + 70/85/95% limit alerts + days-to-limit risk).
 
 ## Problem Statement
 
@@ -37,9 +44,18 @@ Mapped to implementation folders:
 data/ (read-only)
   → data_processing/   # validate, clean (all users + focus export), LLM categorize
   → artifacts/*.json   # flat derived files (no nested artifact subfolders in v1)
-  → model/             # analytics, days-to-limit, recommendations, alerts
-  → ui/                # Streamlit dashboard + grounded coach
+  → model/             # spending analytics, anomaly/alerts, days-to-limit, recommendations
+  → ui/                # Streamlit dashboard + conversational coach
 ```
+
+**Product pillars → implementation homes**
+
+| Product pillar | Where it lives |
+|---|---|
+| LLM auto-categorization | `data_processing/categorize.ipynb` |
+| Spending analytics | `model/analytics.ipynb` + `ui/dashboard` |
+| Anomaly detection | `model/analytics.ipynb` / `model/predict.ipynb` / `model/notify.ipynb` (unusual spend + runway risk + 70/85/95 alerts) |
+| Conversational coaching | `ui/coach.ipynb` (grounded in artifacts) |
 
 **Grounded AI rule:** the coach may only cite numbers that exist in computed artifacts. If a figure is missing or the request is outside available data, it must say so—never invent spend totals, limits, or projections.
 
@@ -75,14 +91,14 @@ Inputs are read only from `data/`. All derived outputs are written as **flat fil
 │   ├── clean.ipynb               # done — clean/join all users + focus export
 │   └── categorize.ipynb          # planned — LLM categorization
 ├── model/                        # planned notebooks
-│   ├── analytics.ipynb
-│   ├── predict.ipynb
-│   ├── recommend.ipynb
-│   └── notify.ipynb
+│   ├── analytics.ipynb           # spending analytics (+ unusual-txn signals)
+│   ├── predict.ipynb             # days-to-limit / projected month-end (overspend risk)
+│   ├── recommend.ipynb           # ranked category reductions
+│   └── notify.ipynb              # 70/85/95% limit anomaly alerts
 ├── ui/                           # planned Streamlit / coach notebooks
 │   ├── app.ipynb
-│   ├── dashboard.ipynb
-│   └── coach.ipynb
+│   ├── dashboard.ipynb           # spending analytics visualizations
+│   └── coach.ipynb               # conversational financial coaching
 ├── tests/
 │   └── clean_tests.ipynb         # done — unit tests for clean helpers
 ├── config.yaml                   # planned non-secret defaults
@@ -99,8 +115,8 @@ Placement rules (business-justified):
 |---|---|---|
 | Schema validation, cleaning, joins, MCC enrichment | `data_processing/` | Trustworthy foundation without mutating source CSVs |
 | LLM auto-categorization + MCC fallback + cache | `data_processing/categorize.ipynb` | Categorization is data prep that unlocks time-to-first-insight; not the sklearn model |
-| Spend analytics, runway prediction, ranked recommendations, 70/85/95 alerts | `model/` | Intelligence outputs that feed the UI/coach from cleaned data |
-| Dashboard + grounded chat memory | `ui/` | Presentation and stateful coaching; reads artifacts only |
+| Spending analytics + anomaly signals (unusual txns, threshold alerts, overspend risk) | `model/` | Intelligence outputs that feed the UI/coach from cleaned data |
+| Dashboard + conversational coaching (grounded memory) | `ui/` | Presentation and stateful coaching; reads artifacts only |
 
 ## Dataset Specification
 
@@ -152,12 +168,12 @@ Placement rules (business-justified):
 | Ingestion / validation | `data_processing/validate_schema.ipynb` | Done | Load read-only sources; inspect columns/dtypes/nulls; document schema for approval | Notebook inspection outputs (no required artifact yet) |
 | Processing | `data_processing/clean.ipynb` | Done | Clean/standardize, dedupe, join users/cards/MCC for **all users**; export focus subset; write QA report | `artifacts/transactions_enriched.json` (NDJSON, all users), `artifacts/transactions_enriched_1696.json`, `artifacts/qa_report.json` |
 | Helper tests | `tests/clean_tests.ipynb` | Done | Unit-test clean helpers loaded from `clean.ipynb` | Console PASS / fail |
-| Categorization | `data_processing/categorize.ipynb` | Planned | Batched LLM categorization with disk cache; MCC-based fallback on outage/cap | `artifacts/categorized_{client_id}.jsonl` (or equivalent flat file) |
-| Analytics | `model/analytics.ipynb` | Planned | Category spend, MTD discretionary, budget utilization, trends | `artifacts/spend_by_category_{client_id}.json`, `artifacts/budget_utilization_{client_id}.json` |
-| Prediction | `model/predict.ipynb` | Planned | Per-user regression for days-to-limit / projected month-end spend; cold-start fallback | `artifacts/ridge_{client_id}.pkl`, `artifacts/runway_{client_id}.json`, `artifacts/prediction_{client_id}.json` |
+| Categorization (LLM auto-categorization) | `data_processing/categorize.ipynb` | Planned | Batched LLM categorization with disk cache; MCC-based fallback on outage/cap | `artifacts/categorized_{client_id}.jsonl` (or equivalent flat file) |
+| Spending analytics | `model/analytics.ipynb` | Planned | Category spend, MTD discretionary, budget utilization, trends; flag unusual transactions vs user baselines | `artifacts/spend_by_category_{client_id}.json`, `artifacts/budget_utilization_{client_id}.json`, `artifacts/anomalies_{client_id}.json` |
+| Prediction (overspend risk) | `model/predict.ipynb` | Planned | Per-user regression for days-to-limit / projected month-end spend; cold-start fallback | `artifacts/ridge_{client_id}.pkl`, `artifacts/runway_{client_id}.json`, `artifacts/prediction_{client_id}.json` |
 | Recommendations | `model/recommend.ipynb` | Planned | Ranked category-level reductions with computed “days gained” impact | `artifacts/recommendations_{client_id}.json` |
-| Notifications | `model/notify.ipynb` | Planned | Emit 70% / 85% / 95% utilization events (v1: in-app) | `artifacts/events_{client_id}.jsonl` |
-| UI + coach | `ui/app.ipynb`, `ui/dashboard.ipynb`, `ui/coach.ipynb` | Planned | Streamlit dashboard + multi-turn grounded coach with local session memory | `artifacts/session_{client_id}.json` |
+| Notifications (anomaly alerts) | `model/notify.ipynb` | Planned | Emit 70% / 85% / 95% utilization events (v1: in-app) as budget-threshold anomalies | `artifacts/events_{client_id}.jsonl` |
+| Conversational coaching + dashboard | `ui/app.ipynb`, `ui/dashboard.ipynb`, `ui/coach.ipynb` | Planned | Streamlit spending dashboard + multi-turn grounded coach with local session memory | `artifacts/session_{client_id}.json` |
 
 **Cleaning behavior (current):**
 
@@ -196,7 +212,8 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 ## Evaluation Checklist
 
 - [ ] End-to-end demo for `client_id = 1696`: reads `data/` read-only, writes `artifacts/`, launches Streamlit, and the coach answers using only grounded computed values.
-- [ ] Four AI capabilities shown as one system: LLM categorization (cache + fallback), interactive visualization, regression-based days-to-limit prediction, and stateful multi-turn coach memory.
+- [ ] Product pillars delivered: LLM auto-categorization, spending analytics, anomaly detection (unusual txns + threshold/runway risk), conversational coaching.
+- [ ] Graded AI capabilities shown as one system: LLM categorization (cache + fallback), interactive visualization, regression-based days-to-limit prediction, and stateful multi-turn coach memory.
 - [ ] Dashboard (user 1696): Monthly Limit Meter (actual vs projected), Customer Controls, Predicted Month-End Spend, Month-to-Date Discretionary Spend, Category Trend Chart with category buckets, Recommendations section.
 - [ ] Chat interface (user 1696): usable multi-turn coach; MTD Spend, Limit, and Projected values visible as grounded context.
 - [x] Validation hooks / unit tests cover clean helpers (`tests/clean_tests.ipynb`); expand later for schema/read-only/artifact contracts and e2e smoke for 1696.
@@ -207,9 +224,9 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 - [x] Implement `data_processing/clean.ipynb` → flat artifacts under `artifacts/` + QA report (all-users NDJSON + focus JSON for 1696).
 - [x] Add `tests/clean_tests.ipynb` for clean helper unit tests.
 - [ ] Implement `data_processing/categorize.ipynb` with batching, caching, and MCC fallback; verify 100% transaction coverage for the focus user.
-- [ ] Implement `model/analytics.ipynb` so all dashboard figures are reproducible from artifacts.
-- [ ] Implement `model/predict.ipynb` (days-to-limit / projected month-end) with cold-start fallback; write metrics as flat files under `artifacts/`.
+- [ ] Implement `model/analytics.ipynb` so all dashboard figures are reproducible from artifacts; include unusual-transaction anomaly signals.
+- [ ] Implement `model/predict.ipynb` (days-to-limit / projected month-end overspend risk) with cold-start fallback; write metrics as flat files under `artifacts/`.
 - [ ] Implement `model/recommend.ipynb` with deterministic impact ranking (“days gained”).
-- [ ] Implement `model/notify.ipynb` for 70/85/95 events as flat files under `artifacts/`.
-- [ ] Implement `ui/` (dashboard + coach) reading only `artifacts/`; persist chat as a flat file under `artifacts/`; show degraded mode on LLM outage.
+- [ ] Implement `model/notify.ipynb` for 70/85/95 budget-threshold anomaly events as flat files under `artifacts/`.
+- [ ] Implement `ui/` (spending dashboard + conversational coach) reading only `artifacts/`; persist chat as a flat file under `artifacts/`; show degraded mode on LLM outage.
 - [ ] Expand `tests/`: read-only guarantee for `data/`, schema checks, artifact contracts, end-to-end smoke for `client_id=1696`.
