@@ -13,6 +13,26 @@ A user (or demo operator) supplies transaction history via CSV; the system auto-
 
 V1 is scoped for a six-week build: local Streamlit deployment, no model fine-tuning, and a single coherent pipeline. The graded learning objective still requires four AI capabilities integrated end-to-end—LLM classification, interactive visualization, regression-based prediction, and stateful coach memory—while anomaly detection is delivered as part of the analytics/prediction/notification path (unusual-txn heuristics + 70/85/95% limit alerts + days-to-limit risk).
 
+## Required Outcomes & Learning Objective
+
+**Functional outcomes the system must deliver**
+
+- Ingest a user’s bank statement (CSV), auto-categorize transactions with an LLM (no manual tagging), and render an interactive spending dashboard.
+- Predict how many days remain before the user reaches their self-set discretionary spending limit using a regression model trained on that user’s own transaction history.
+- Generate **ranked, category-level spending reduction suggestions** that help extend that limit (impact ranked, e.g. “days gained”).
+- Surface **both the prediction and the recommendations as grounded context** inside a **multi-turn conversational coach** (every numeric claim must come from computed artifacts).
+
+**Broader learning objective**
+
+Demonstrate that **four distinct AI capabilities** can be integrated into a **single, coherent, data-driven pipeline** rather than treated as isolated exercises:
+
+1. **LLM-based classification** — transaction auto-categorization (`data_processing/categorize.ipynb`)
+2. **Interactive data visualization** — Streamlit spending dashboard (`ui/dashboard`)
+3. **Regression-based prediction** — days-to-limit / projected month-end spend (`model/predict.ipynb`)
+4. **Stateful memory** — multi-turn coach session memory grounded in artifacts (`ui/coach` + `artifacts/session_{client_id}.json`)
+
+Every architectural choice (few-shot prompts, feature engineering, system-prompt injection of prediction/recommendations) should be explainable against a business constraint, not only as a technique.
+
 ## Problem Statement
 
 ClearLedger serves ~55,000 millennial and Gen Z subscribers, but users must manually tag 60–150 transactions before seeing insights. That friction drives **71% second-session churn**. Feedback shows users want actionable guidance, not static reports, while competitors prepare AI finance coaches. ClearLedger has roughly a six-week window to strengthen its Series A narrative.
@@ -215,7 +235,7 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 - [ ] Product pillars delivered: LLM auto-categorization, spending analytics, anomaly detection (unusual txns + threshold/runway risk), conversational coaching.
 - [ ] Graded AI capabilities shown as one system: LLM categorization (cache + fallback), interactive visualization, regression-based days-to-limit prediction, and stateful multi-turn coach memory.
 - [ ] Dashboard (user 1696): Monthly Limit Meter (actual vs projected), Customer Controls, Predicted Month-End Spend, Month-to-Date Discretionary Spend, Category Trend Chart with category buckets, Recommendations section.
-- [ ] Chat interface (user 1696): usable multi-turn coach; MTD Spend, Limit, and Projected values visible as grounded context.
+- [ ] Chat interface (user 1696): usable multi-turn coach with **stateful memory**; MTD Spend, Limit, Projected/days-to-limit **prediction**, and **ranked recommendations** injected as grounded context.
 - [x] Validation hooks / unit tests cover clean helpers (`tests/clean_tests.ipynb`); expand later for schema/read-only/artifact contracts and e2e smoke for 1696.
 
 ## Implementation Checklist
