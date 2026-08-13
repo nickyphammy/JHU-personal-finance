@@ -104,7 +104,6 @@ Inputs are read only from `data/`. All derived outputs are written as **flat fil
 │   └── mcc_codes.json
 ├── artifacts/                    # Derived outputs only (write-only, flat files)
 │   ├── transactions_enriched.json          # NDJSON; all users (local / large; not committed)
-│   ├── transactions_enriched_1696.json     # pretty JSON; focus demo user
 │   └── qa_report.json                      # cleaning QA counters + assumptions
 ├── data_processing/
 │   ├── validate_schema.ipynb     # done — schema inspection / validation
@@ -149,7 +148,7 @@ Placement rules (business-justified):
 | `users.csv` | Demographics + `monthly_discretionary_limits` | 100 rows |
 | `mcc_codes.json` | MCC code → merchant category description | 109 codes |
 
-**Focus / demo user:** `FOCUS_CLIENT_ID = 1696` (screenshots, end-to-end demo, submission PDFs). Cleaning processes **all users** into a training-ready NDJSON artifact, and also exports a focus subset for user 1696. Downstream demo, prediction, dashboard, and coach still center on **1696**.
+**Demo user for screenshots/submission:** `client_id = 1696` (select in the Streamlit UI). Cleaning and training prep run across **all users**.
 
 **Join keys**
 
@@ -186,7 +185,7 @@ Placement rules (business-justified):
 | Stage | Module | Status | Responsibility | Primary artifacts |
 |---|---|---|---|---|
 | Ingestion / validation | `data_processing/validate_schema.ipynb` | Done | Load read-only sources; inspect columns/dtypes/nulls; document schema for approval | Notebook inspection outputs (no required artifact yet) |
-| Processing | `data_processing/clean.ipynb` | Done | Clean/standardize, dedupe, join users/cards/MCC for **all users**; export focus subset; write QA report | `artifacts/transactions_enriched.json` (NDJSON, all users), `artifacts/transactions_enriched_1696.json`, `artifacts/qa_report.json` |
+| Processing | `data_processing/clean.ipynb` | Done | Clean/standardize, dedupe, join users/cards/MCC for **all users**; write QA report | `artifacts/transactions_enriched.json` (NDJSON, all users), `artifacts/qa_report.json` |
 | Helper tests | `tests/clean_tests.ipynb` | Done | Unit-test clean helpers loaded from `clean.ipynb` | Console PASS / fail |
 | Categorization (LLM auto-categorization) | `data_processing/categorize.ipynb` | Planned | Batched LLM categorization with disk cache; MCC-based fallback on outage/cap | `artifacts/categorized_{client_id}.jsonl` (or equivalent flat file) |
 | Spending analytics | `model/analytics.ipynb` | Planned | Category spend, MTD discretionary, budget utilization, trends; flag unusual transactions vs user baselines | `artifacts/spend_by_category_{client_id}.json`, `artifacts/budget_utilization_{client_id}.json`, `artifacts/anomalies_{client_id}.json` |
@@ -202,7 +201,7 @@ Placement rules (business-justified):
 - Dedupes by transaction `id` (keep first)
 - Left-joins non-PII card fields and user profile fields (excludes `address`, `card_number`, `cvv`)
 - Adds `mcc_description` from `mcc_codes.json` (`UNKNOWN_MCC` when missing)
-- Writes all-user NDJSON for reuse/training prep, plus a pretty JSON export for `FOCUS_CLIENT_ID=1696`
+- Writes all-user NDJSON for reuse/training prep (optional single-user export can be enabled later if needed)
 
 **Critical degradation path (later stages):** if the LLM API is unreachable or the daily cost cap is hit → categorize via deterministic MCC mapping (plus `Other/Uncategorized`) and switch the coach to deterministic “status” mode that only presents computed analytics and recommendations (no free-form invention).
 
@@ -212,13 +211,13 @@ Each module reads from `data/` or upstream artifacts and writes only under `arti
 
 - **Python:** 3.11+
 - **Dependencies:** install from `requirements.txt` (pandas, pandera, openai, scikit-learn, streamlit, plotly, etc.)
-- **Secrets (`.env`, never committed):** `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, optional overrides for `DATA_DIR`, `ARTIFACTS_DIR`, `CLIENT_ID_DEFAULT` / `FOCUS_CLIENT_ID`, `AS_OF_DATE`
+- **Secrets (`.env`, never committed):** `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, optional overrides for `DATA_DIR`, `ARTIFACTS_DIR`, `AS_OF_DATE`
 - **Non-secrets (`config.yaml`, planned):** paths, category taxonomy, discretionary mapping, notification thresholds (70/85/95), cost/rate caps, cold-start minimum history
 - **Runtime:** notebooks run from project root (or resolve root via locating `data/`); local Streamlit planned for UI
 
 When the LLM is unavailable, configuration must force the documented fallback path and surface a clear UI warning—not a silent failure.
 
-**Artifact size note:** `artifacts/transactions_enriched.json` (all-users NDJSON) is large and should remain local / gitignored. Commit the smaller focus export and QA report as needed for demo reproducibility.
+**Artifact size note:** `artifacts/transactions_enriched.json` (all-users NDJSON) is large and should remain local / gitignored.
 
 ## Known Constraints & Limitations
 
@@ -241,7 +240,7 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 ## Implementation Checklist
 
 - [x] Confirm `data/` schemas match this spec; document any drift and update join keys/handling rules (`validate_schema.ipynb`).
-- [x] Implement `data_processing/clean.ipynb` → flat artifacts under `artifacts/` + QA report (all-users NDJSON + focus JSON for 1696).
+- [x] Implement `data_processing/clean.ipynb` → flat artifacts under `artifacts/` + QA report (all-users NDJSON).
 - [x] Add `tests/clean_tests.ipynb` for clean helper unit tests.
 - [ ] Implement `data_processing/categorize.ipynb` with batching, caching, and MCC fallback; verify 100% transaction coverage for the focus user.
 - [ ] Implement `model/analytics.ipynb` so all dashboard figures are reproducible from artifacts; include unusual-transaction anomaly signals.

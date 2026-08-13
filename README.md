@@ -76,7 +76,6 @@ LLM_API_KEY=...
 LLM_MODEL=gpt-4o-mini
 DATA_DIR=data
 ARTIFACTS_DIR=artifacts
-CLIENT_ID_DEFAULT=1696
 ```
 
 Optional: set `AS_OF_DATE=YYYY-MM-DD` to override the default “today” (user’s max transaction date).
@@ -95,6 +94,8 @@ Run from the project root after activating the virtual environment. Pipeline mod
 
 Demo user for screenshots and submission PDFs: **`client_id = 1696`**.
 
+The Streamlit UI supports **any** `client_id` found in `data/users.csv` via the left sidebar dropdown.
+
 ## Output Files
 
 All outputs are derived artifacts under `artifacts/` (never under `data/`). Current clean-stage contract:
@@ -102,7 +103,6 @@ All outputs are derived artifacts under `artifacts/` (never under `data/`). Curr
 | Artifact | Produced by | Notes |
 |---|---|---|
 | `artifacts/transactions_enriched.json` | `data_processing/clean.ipynb` | NDJSON for **all users** (large; local / gitignored) |
-| `artifacts/transactions_enriched_1696.json` | `data_processing/clean.ipynb` | Pretty JSON focus export for demo user 1696 |
 | `artifacts/qa_report.json` | `data_processing/clean.ipynb` | QA counters + cleaning assumptions |
 
 ## Guardrails
