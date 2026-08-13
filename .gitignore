@@ -220,7 +220,7 @@ __marimo__/
 # macOS
 .DS_Store
 
-# Large / regenerable pipeline artifacts (keep small focus exports if needed)
-artifacts/transactions_enriched.json
-artifacts/*.parquet
-artifacts/*.pkl
+# Regenerable pipeline outputs (recreated by clean/analytics/predict notebooks)
+# Keep the empty folder via .gitkeep only.
+artifacts/*
+!artifacts/.gitkeep
