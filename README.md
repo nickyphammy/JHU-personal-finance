@@ -1,25 +1,23 @@
 # ClearLedger — Personal Finance Coach
 
-ClearLedger is a subscription personal finance app facing high early churn because users must manually tag dozens of transactions before seeing value. This project implements a **Personal Finance Coach** that ingests a user’s bank CSV, auto-categorizes transactions with an LLM (no manual tagging), renders an interactive spending dashboard, predicts days remaining before the monthly discretionary limit is hit, ranks category-level spending reductions, and exposes those grounded insights in a multi-turn AI coach.
+ClearLedger is a subscription personal finance app facing high early churn because users must manually tag dozens of transactions before seeing value. This project implements a **Personal Finance Coach** that ingests bank CSVs, categorizes spending, renders an interactive dashboard, and (planned) predicts days-to-limit, ranks category reductions, and exposes grounded insights in a multi-turn AI coach.
 
-V1 runs locally with Streamlit, keeps source data under `data/` read-only, and writes all derived outputs under `artifacts/`.
+V1 runs locally with Streamlit, keeps source data under `data/` read-only, and writes all derived outputs under `artifacts/` (gitignored; regenerable).
 
 ## Pipeline
 
 1. Read source datasets from `data/` (transactions, cards, users, MCC lookup) **read-only**.
 2. Validate schemas, clean/standardize types (currency/date), dedupe, and join into a unified dataset.
-3. Categorize transactions with an LLM (batched) with caching; fall back to MCC rules if needed.
-4. Compute analytics (spend by category, budget utilization, trends).
-5. Train/infer a regression model to predict **days-to-limit** for the monthly discretionary budget.
-6. Generate impact-ranked category-level recommendations to extend runway.
-7. Emit notification events at 70% / 85% / 95% utilization (v1: in-app display only).
-8. Launch Streamlit dashboard + multi-turn coach grounded in computed artifacts + local memory.
+3. Categorize transactions — **current:** rule-based MCC mapping in analytics; **planned:** LLM batched + cached with MCC fallback.
+4. Compute analytics (spend by category, budget utilization, trends) via `model/analytics_core.py`.
+5. **Planned:** regression model for **days-to-limit** / projected month-end spend.
+6. **Planned:** impact-ranked category-level recommendations.
+7. **Planned:** notification events at 70% / 85% / 95% utilization.
+8. Launch Streamlit dashboard (`ui/app.py`); **planned:** multi-turn coach grounded in artifacts + local memory.
 
-**All source data is read from the existing `data/` folder only.** No source file is modified in place, and nothing is downloaded. All derived artifacts (cleaned datasets, caches, models, metrics, recommendations, chat state, logs) are written under `artifacts/`.
+**All source data is read from the existing `data/` folder only.** No source file is modified in place. Derived artifacts are written under `artifacts/` and are **not committed to git**.
 
 ## Project Structure
-
-Target implementation layout (domain folders instead of a nested `src/` package):
 
 ```
 .
@@ -28,28 +26,30 @@ Target implementation layout (domain folders instead of a nested `src/` package)
 │   ├── cards.csv
 │   ├── users.csv
 │   └── mcc_codes.json
-├── artifacts/                    # Derived outputs only (written by pipeline, flat files)
-├── data_processing/              # Schema validation, cleaning, joins, LLM categorization
-│   ├── validate_schema.ipynb
-│   ├── clean.ipynb
-│   └── categorize.ipynb          # planned
-├── model/                        # Analytics, prediction, recommendations, notifications
-│   ├── analytics.ipynb           # planned
+├── artifacts/                    # Derived outputs (gitignored except .gitkeep)
+├── data_processing/
+│   ├── validate_schema.ipynb     # done
+│   ├── clean.ipynb               # done
+│   └── categorize.ipynb          # planned (LLM)
+├── model/
+│   ├── analytics_core.py         # done — analytics backend
+│   ├── analytics.ipynb           # done — batch runner (default 1696)
 │   ├── predict.ipynb             # planned
 │   ├── recommend.ipynb           # planned
 │   └── notify.ipynb              # planned
-├── ui/                           # Streamlit dashboard + coach
-│   ├── app.ipynb                 # planned
-│   ├── dashboard.ipynb           # planned
-│   └── coach.ipynb               # planned
-├── tests/                        # Unit / integration / validation hooks
-├── config.yaml                   # Non-secret defaults
-├── .env                          # Secrets (not committed)
+├── ui/
+│   └── app.py                    # done — Streamlit frontend
+├── tests/
+│   ├── clean_tests.ipynb
+│   ├── analytics_tests.ipynb
+│   └── ui_tests.ipynb
 ├── requirements.txt
 ├── PROJECT_SPEC.md
 ├── README.md
 └── codex_trail.txt
 ```
+
+**Separation of concerns:** `model/analytics_core.py` owns computation and artifact writes. `ui/app.py` is frontend-only (select client → call backend → render).
 
 ## Execution Steps
 
@@ -66,9 +66,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### `.env` setup
+### `.env` setup (needed when LLM categorize / coach land)
 
-Create a `.env` file in the project root (never commit it) with at minimum:
+Create a `.env` file in the project root (never commit it):
 
 ```sh
 LLM_PROVIDER=openai
@@ -78,39 +78,59 @@ DATA_DIR=data
 ARTIFACTS_DIR=artifacts
 ```
 
-Optional: set `AS_OF_DATE=YYYY-MM-DD` to override the default “today” (user’s max transaction date).
+Optional: `AS_OF_DATE=YYYY-MM-DD` to override the default “today” (user’s max transaction date).
 
-### Pipeline and UI commands
-
-Run from the project root after activating the virtual environment. Pipeline modules are the intended entrypoints once implemented:
+### Run the current pipeline
 
 ```sh
-# Current workflow (notebook-first):
-# 1) Open and run: data_processing/validate_schema.ipynb
-# 2) Open and run: data_processing/clean.ipynb (set CLIENT_ID at the top)
-#
-# Planned: model/* and ui/* notebooks and runnable CLI entrypoints (see PROJECT_SPEC.md)
+# From project root, with venv activated:
+
+# 1) Notebooks (data prep)
+#    Open and run: data_processing/validate_schema.ipynb
+#    Open and run: data_processing/clean.ipynb
+#       → artifacts/transactions_enriched.json
+#       → artifacts/qa_report.json
+
+# 2) Optional batch analytics for demo user 1696
+#    Open and run: model/analytics.ipynb  (CLIENT_ID = 1696)
+
+# 3) Launch Streamlit UI (computes analytics via backend for any client)
+streamlit run ui/app.py
 ```
 
-Demo user for screenshots and submission PDFs: **`client_id = 1696`**.
+Demo user for screenshots/submission PDFs: **`client_id = 1696`** (UI default).  
+The sidebar supports **any** `client_id` from `data/users.csv`.
 
-The Streamlit UI supports **any** `client_id` found in `data/users.csv` via the left sidebar dropdown.
+### Tests
+
+```sh
+# Open and run notebooks under tests/:
+#   tests/clean_tests.ipynb
+#   tests/analytics_tests.ipynb
+#   tests/ui_tests.ipynb
+```
 
 ## Output Files
 
-All outputs are derived artifacts under `artifacts/` (never under `data/`). Current clean-stage contract:
+All outputs are under `artifacts/` (never under `data/`). Regenerable and gitignored:
 
 | Artifact | Produced by | Notes |
 |---|---|---|
-| `artifacts/transactions_enriched.json` | `data_processing/clean.ipynb` | NDJSON for **all users** (large; local / gitignored) |
+| `artifacts/transactions_enriched.json` | `data_processing/clean.ipynb` | NDJSON for **all users** (large) |
 | `artifacts/qa_report.json` | `data_processing/clean.ipynb` | QA counters + cleaning assumptions |
+| `artifacts/spend_by_category_{client_id}.json` | `model/analytics_core.py` (UI or `analytics.ipynb`) | Category spend |
+| `artifacts/spend_by_mcc_{client_id}.json` | `model/analytics_core.py` | MCC spend |
+| `artifacts/budget_utilization_{client_id}.json` | `model/analytics_core.py` | Limit, MTD discretionary, utilization |
+| `artifacts/spending_patterns_{client_id}.json` | `model/analytics_core.py` | Month / DOW / merchants |
+
+Planned later: `categorized_*`, `runway_*` / `prediction_*`, `recommendations_*`, `events_*`, `session_*`.
 
 ## Guardrails
 
 V1 guardrails enforced in prompts, pipeline config, and UI:
 
 - **No investment, tax, or legal advice.** Refuse and redirect to budget/spend analysis.
-- **Grounded answers only.** Coach responses are restricted to the user’s own computed artifacts and summaries.
+- **Grounded answers only.** Coach responses restricted to the user’s own computed artifacts and summaries.
 - **Refuse outside available data** (e.g. “Which stocks should I buy?”).
 - **No fabricated numbers.** Every numeric claim must trace to values in `artifacts/`.
 - **Spending limit definition.** `monthly_discretionary_limits` from `data/users.csv` after currency parsing.
@@ -121,6 +141,6 @@ V1 guardrails enforced in prompts, pipeline config, and UI:
 
 ## Notes
 
-- Data is historical (2010s); “today” is defined relative to `AS_OF_DATE` (default: user’s max transaction date).
+- Data is historical (2010s); “today” is `AS_OF_DATE` (default: user’s max transaction date).
 - See [PROJECT_SPEC.md](PROJECT_SPEC.md) for full architecture, schemas, module responsibilities, and evaluation checklist.
-- Known implementation follow-ups: categorization evaluation harness (spot checks + MCC agreement) and cold-start policy details for prediction when history is thin.
+- Next build priorities: `predict` → `recommend` → dashboard wiring → coach → LLM `categorize`.

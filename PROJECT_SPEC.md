@@ -26,10 +26,10 @@ V1 is scoped for a six-week build: local Streamlit deployment, no model fine-tun
 
 Demonstrate that **four distinct AI capabilities** can be integrated into a **single, coherent, data-driven pipeline** rather than treated as isolated exercises:
 
-1. **LLM-based classification** — transaction auto-categorization (`data_processing/categorize.ipynb`)
-2. **Interactive data visualization** — Streamlit spending dashboard (`ui/dashboard`)
-3. **Regression-based prediction** — days-to-limit / projected month-end spend (`model/predict.ipynb`)
-4. **Stateful memory** — multi-turn coach session memory grounded in artifacts (`ui/coach` + `artifacts/session_{client_id}.json`)
+1. **LLM-based classification** — transaction auto-categorization (`data_processing/categorize.ipynb`) — *planned*
+2. **Interactive data visualization** — Streamlit spending dashboard (`ui/app.py`) — *done (analytics views)*
+3. **Regression-based prediction** — days-to-limit / projected month-end spend (`model/predict*`) — *planned*
+4. **Stateful memory** — multi-turn coach session memory grounded in artifacts (`ui/` coach + `artifacts/session_{client_id}.json`) — *planned*
 
 Every architectural choice (few-shot prompts, feature engineering, system-prompt injection of prediction/recommendations) should be explainable against a business constraint, not only as a technique.
 
@@ -58,40 +58,46 @@ Data Ingestion → Data Processing → Analytics & Intelligence → Prediction
 → Recommendations → Notifications → UI (Dashboard + Coach) → Validation & Testing
 ```
 
+**Backend vs frontend (current design)**
+
+- **Backend:** notebooks + Python modules under `data_processing/` and `model/` compute and write `artifacts/`
+- **Frontend:** `ui/app.py` is Streamlit-only — it selects a `client_id`, calls `model/analytics_core.py`, and renders results (no duplicated analytics logic in the UI)
+
 Mapped to implementation folders:
 
 ```
 data/ (read-only)
-  → data_processing/   # validate, clean (all users + focus export), LLM categorize
-  → artifacts/*.json   # flat derived files (no nested artifact subfolders in v1)
-  → model/             # spending analytics, anomaly/alerts, days-to-limit, recommendations
-  → ui/                # Streamlit dashboard + conversational coach
+  → data_processing/   # validate, clean (all users), LLM categorize (planned)
+  → artifacts/*.json   # flat derived files (gitignored; regenerable locally)
+  → model/             # analytics_core + notebooks; predict/recommend/notify planned
+  → ui/app.py          # Streamlit frontend (any client_id via sidebar)
 ```
 
 **Product pillars → implementation homes**
 
-| Product pillar | Where it lives |
-|---|---|
-| LLM auto-categorization | `data_processing/categorize.ipynb` |
-| Spending analytics | `model/analytics.ipynb` + `ui/dashboard` |
-| Anomaly detection | `model/analytics.ipynb` / `model/predict.ipynb` / `model/notify.ipynb` (unusual spend + runway risk + 70/85/95 alerts) |
-| Conversational coaching | `ui/coach.ipynb` (grounded in artifacts) |
+| Product pillar | Where it lives | Status |
+|---|---|---|
+| LLM auto-categorization | `data_processing/categorize.ipynb` | Planned (interim: rule-based MCC in `analytics_core`) |
+| Spending analytics | `model/analytics_core.py` + `model/analytics.ipynb` | Done |
+| Anomaly detection | predict / notify (+ threshold display in UI) | Partial / planned |
+| Conversational coaching | `ui/` coach (grounded in artifacts) | Planned |
 
 **Grounded AI rule:** the coach may only cite numbers that exist in computed artifacts. If a figure is missing or the request is outside available data, it must say so—never invent spend totals, limits, or projections.
 
 ```mermaid
 flowchart TD
   dataDir["data/ read-only"] --> dataProcessing["data_processing/"]
-  dataProcessing --> artifactsFlat["artifacts flat JSON NDJSON"]
-  artifactsFlat --> modelLayer["model/"]
-  modelLayer --> artifactsIntel["artifacts analytics prediction recommendations notifications"]
-  artifactsIntel --> uiLayer["ui/ dashboard + coach"]
-  uiLayer --> chatState["artifacts chat session"]
+  dataProcessing --> artifactsClean["artifacts cleaned NDJSON"]
+  artifactsClean --> analyticsCore["model/analytics_core.py"]
+  analyticsCore --> artifactsIntel["artifacts spend budget patterns"]
+  analyticsCore --> uiLayer["ui/app.py frontend"]
+  artifactsIntel --> uiLayer
+  uiLayer --> futureCoach["coach planned"]
 ```
 
 ## Folder Structure
 
-Inputs are read only from `data/`. All derived outputs are written as **flat files** under `artifacts/` so source integrity is preserved and runs are reproducible. Application code lives in domain notebooks plus tests.
+Inputs are read only from `data/`. All derived outputs are written as **flat files** under `artifacts/` (gitignored except `.gitkeep`). Application code lives in domain folders plus tests.
 
 **Current + target layout**
 
@@ -102,24 +108,31 @@ Inputs are read only from `data/`. All derived outputs are written as **flat fil
 │   ├── cards.csv
 │   ├── users.csv
 │   └── mcc_codes.json
-├── artifacts/                    # Derived outputs only (write-only, flat files)
-│   ├── transactions_enriched.json          # NDJSON; all users (local / large; not committed)
-│   └── qa_report.json                      # cleaning QA counters + assumptions
+├── artifacts/                    # Derived outputs only (local / gitignored)
+│   ├── .gitkeep
+│   ├── transactions_enriched.json          # NDJSON; all users
+│   ├── qa_report.json
+│   ├── spend_by_category_{client_id}.json
+│   ├── spend_by_mcc_{client_id}.json
+│   ├── budget_utilization_{client_id}.json
+│   └── spending_patterns_{client_id}.json
 ├── data_processing/
-│   ├── validate_schema.ipynb     # done — schema inspection / validation
-│   ├── clean.ipynb               # done — clean/join all users + focus export
+│   ├── validate_schema.ipynb     # done
+│   ├── clean.ipynb               # done — clean/join all users
 │   └── categorize.ipynb          # planned — LLM categorization
-├── model/                        # planned notebooks
-│   ├── analytics.ipynb           # spending analytics (+ unusual-txn signals)
-│   ├── predict.ipynb             # days-to-limit / projected month-end (overspend risk)
-│   ├── recommend.ipynb           # ranked category reductions
-│   └── notify.ipynb              # 70/85/95% limit anomaly alerts
-├── ui/                           # planned Streamlit / coach notebooks
-│   ├── app.ipynb
-│   ├── dashboard.ipynb           # spending analytics visualizations
-│   └── coach.ipynb               # conversational financial coaching
+├── model/
+│   ├── __init__.py
+│   ├── analytics_core.py         # done — shared analytics backend
+│   ├── analytics.ipynb           # done — batch runner (default CLIENT_ID=1696)
+│   ├── predict.ipynb             # planned
+│   ├── recommend.ipynb           # planned
+│   └── notify.ipynb              # planned
+├── ui/
+│   └── app.py                    # done — Streamlit frontend (any client_id)
 ├── tests/
-│   └── clean_tests.ipynb         # done — unit tests for clean helpers
+│   ├── clean_tests.ipynb         # done
+│   ├── analytics_tests.ipynb     # done
+│   └── ui_tests.ipynb            # done
 ├── config.yaml                   # planned non-secret defaults
 ├── .env                          # secrets (never committed)
 ├── requirements.txt
@@ -133,9 +146,10 @@ Placement rules (business-justified):
 | Concern | Location | Why |
 |---|---|---|
 | Schema validation, cleaning, joins, MCC enrichment | `data_processing/` | Trustworthy foundation without mutating source CSVs |
-| LLM auto-categorization + MCC fallback + cache | `data_processing/categorize.ipynb` | Categorization is data prep that unlocks time-to-first-insight; not the sklearn model |
-| Spending analytics + anomaly signals (unusual txns, threshold alerts, overspend risk) | `model/` | Intelligence outputs that feed the UI/coach from cleaned data |
-| Dashboard + conversational coaching (grounded memory) | `ui/` | Presentation and stateful coaching; reads artifacts only |
+| LLM auto-categorization + MCC fallback + cache | `data_processing/categorize.ipynb` | Categorization is data prep that unlocks time-to-first-insight |
+| Spending analytics (shared backend) | `model/analytics_core.py` | Single source of truth; UI stays presentation-only |
+| Prediction / recommendations / alerts | `model/` | Intelligence outputs that feed UI/coach |
+| Dashboard + conversational coaching | `ui/` | Presentation and stateful coaching |
 
 ## Dataset Specification
 
@@ -148,7 +162,7 @@ Placement rules (business-justified):
 | `users.csv` | Demographics + `monthly_discretionary_limits` | 100 rows |
 | `mcc_codes.json` | MCC code → merchant category description | 109 codes |
 
-**Demo user for screenshots/submission:** `client_id = 1696` (select in the Streamlit UI). Cleaning and training prep run across **all users**.
+**Demo user for screenshots/submission:** `client_id = 1696` (default in Streamlit). Cleaning produces an all-users NDJSON; the UI can select **any** `client_id` from `users.csv` and compute analytics for that user via the backend.
 
 **Join keys**
 
@@ -184,24 +198,32 @@ Placement rules (business-justified):
 
 | Stage | Module | Status | Responsibility | Primary artifacts |
 |---|---|---|---|---|
-| Ingestion / validation | `data_processing/validate_schema.ipynb` | Done | Load read-only sources; inspect columns/dtypes/nulls; document schema for approval | Notebook inspection outputs (no required artifact yet) |
-| Processing | `data_processing/clean.ipynb` | Done | Clean/standardize, dedupe, join users/cards/MCC for **all users**; write QA report | `artifacts/transactions_enriched.json` (NDJSON, all users), `artifacts/qa_report.json` |
-| Helper tests | `tests/clean_tests.ipynb` | Done | Unit-test clean helpers loaded from `clean.ipynb` | Console PASS / fail |
-| Categorization (LLM auto-categorization) | `data_processing/categorize.ipynb` | Planned | Batched LLM categorization with disk cache; MCC-based fallback on outage/cap | `artifacts/categorized_{client_id}.jsonl` (or equivalent flat file) |
-| Spending analytics | `model/analytics.ipynb` | Planned | Category spend, MTD discretionary, budget utilization, trends; flag unusual transactions vs user baselines | `artifacts/spend_by_category_{client_id}.json`, `artifacts/budget_utilization_{client_id}.json`, `artifacts/anomalies_{client_id}.json` |
-| Prediction (overspend risk) | `model/predict.ipynb` | Planned | Per-user regression for days-to-limit / projected month-end spend; cold-start fallback | `artifacts/ridge_{client_id}.pkl`, `artifacts/runway_{client_id}.json`, `artifacts/prediction_{client_id}.json` |
-| Recommendations | `model/recommend.ipynb` | Planned | Ranked category-level reductions with computed “days gained” impact | `artifacts/recommendations_{client_id}.json` |
-| Notifications (anomaly alerts) | `model/notify.ipynb` | Planned | Emit 70% / 85% / 95% utilization events (v1: in-app) as budget-threshold anomalies | `artifacts/events_{client_id}.jsonl` |
-| Conversational coaching + dashboard | `ui/app.ipynb`, `ui/dashboard.ipynb`, `ui/coach.ipynb` | Planned | Streamlit spending dashboard + multi-turn grounded coach with local session memory | `artifacts/session_{client_id}.json` |
+| Ingestion / validation | `data_processing/validate_schema.ipynb` | Done | Load read-only sources; inspect columns/dtypes/nulls | Notebook inspection |
+| Processing | `data_processing/clean.ipynb` | Done | Clean/standardize, dedupe, join users/cards/MCC for **all users**; QA report | `transactions_enriched.json`, `qa_report.json` |
+| Analytics backend | `model/analytics_core.py` | Done | MCC→category mapping, spend/budget/patterns compute, write per-client artifacts; called by UI | `spend_by_category_{id}.json`, `budget_utilization_{id}.json`, `spend_by_mcc_{id}.json`, `spending_patterns_{id}.json` |
+| Analytics batch notebook | `model/analytics.ipynb` | Done | Batch runner around `analytics_core` (default `CLIENT_ID=1696`) | Same analytics artifacts |
+| UI frontend | `ui/app.py` | Done (dashboard) | Streamlit only: client select, call backend, render charts/tables | Reads/triggers analytics artifacts |
+| Helper tests | `tests/clean_tests.ipynb`, `analytics_tests.ipynb`, `ui_tests.ipynb` | Done | Unit tests for clean helpers, analytics mapping, UI client-id parsing | Console PASS / fail |
+| Categorization (LLM) | `data_processing/categorize.ipynb` | Planned | Batched LLM categorization + cache + MCC fallback | `categorized_{client_id}.*` |
+| Prediction | `model/predict.ipynb` (+ core module) | Planned | Per-user regression: days-to-limit / projected month-end | `runway_{id}.json`, `prediction_{id}.json`, model pickle |
+| Recommendations | `model/recommend.ipynb` | Planned | Ranked category reductions (“days gained”) | `recommendations_{id}.json` |
+| Notifications | `model/notify.ipynb` | Planned | 70/85/95 utilization events | `events_{id}.jsonl` |
+| Coach | `ui/` coach | Planned | Multi-turn grounded chat + session memory | `session_{id}.json` |
 
 **Cleaning behavior (current):**
 
 - Parses currency → `amount_usd` / `*_usd` fields; parses datetimes → `transaction_dt`
 - Normalizes ZIP, MCC, state; derives `is_online`; drops invalid amount/date rows
 - Dedupes by transaction `id` (keep first)
-- Left-joins non-PII card fields and user profile fields (excludes `address`, `card_number`, `cvv`)
+- Left-joins non-PII card/user fields (excludes `address`, `card_number`, `cvv`)
 - Adds `mcc_description` from `mcc_codes.json` (`UNKNOWN_MCC` when missing)
-- Writes all-user NDJSON for reuse/training prep (optional single-user export can be enabled later if needed)
+- Writes all-user NDJSON for reuse
+
+**Analytics behavior (current):**
+
+- Rule-based MCC category mapping (interim until LLM categorize lands)
+- Discretionary categories drive MTD budget utilization vs `monthly_discretionary_limit_usd`
+- UI switching `client_id` re-runs `analytics_core` for that user and refreshes per-client artifacts
 
 **Critical degradation path (later stages):** if the LLM API is unreachable or the daily cost cap is hit → categorize via deterministic MCC mapping (plus `Other/Uncategorized`) and switch the coach to deterministic “status” mode that only presents computed analytics and recommendations (no free-form invention).
 
@@ -213,17 +235,20 @@ Each module reads from `data/` or upstream artifacts and writes only under `arti
 - **Dependencies:** install from `requirements.txt` (pandas, pandera, openai, scikit-learn, streamlit, plotly, etc.)
 - **Secrets (`.env`, never committed):** `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, optional overrides for `DATA_DIR`, `ARTIFACTS_DIR`, `AS_OF_DATE`
 - **Non-secrets (`config.yaml`, planned):** paths, category taxonomy, discretionary mapping, notification thresholds (70/85/95), cost/rate caps, cold-start minimum history
-- **Runtime:** notebooks run from project root (or resolve root via locating `data/`); local Streamlit planned for UI
+- **Runtime:**
+  - Notebooks: run from project root (or resolve root via locating `data/`)
+  - UI: `streamlit run ui/app.py` from project root
 
 When the LLM is unavailable, configuration must force the documented fallback path and surface a clear UI warning—not a silent failure.
 
-**Artifact size note:** `artifacts/transactions_enriched.json` (all-users NDJSON) is large and should remain local / gitignored.
+**Artifact git policy:** all files under `artifacts/` are gitignored except `artifacts/.gitkeep`. Recreate locally by running clean + analytics (or using the UI, which calls the analytics backend).
 
 ## Known Constraints & Limitations
 
 - **No labeled category ground truth:** evaluation uses QA metrics, spot checks, and MCC agreement where available—not supervised accuracy.
 - **Historical data (2010s):** calendar “today” is not wall-clock now; use `AS_OF_DATE` (default: user’s latest transaction date).
-- **Single-user prediction sensitivity:** cold start and behavioral shifts can degrade the days-to-limit model; an explicit fallback policy is required. Cleaning may cover all users, but the demo prediction/UI path remains focused on one client (1696).
+- **Interim categorization:** analytics currently uses rule-based MCC mapping; LLM categorization is still planned for the graded classification capability.
+- **Single-user prediction sensitivity:** cold start and behavioral shifts can degrade the days-to-limit model; an explicit fallback policy is required.
 - **Cost and rate limits:** LLM calls must be batched and cached; exceeding caps triggers MCC fallback.
 - **Advice scope:** no personalized investment, tax, or legal advice—budget and spend analysis only.
 - **PII:** address and card secrets stay out of prompts, logs, and UI.
@@ -235,17 +260,22 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 - [ ] Graded AI capabilities shown as one system: LLM categorization (cache + fallback), interactive visualization, regression-based days-to-limit prediction, and stateful multi-turn coach memory.
 - [ ] Dashboard (user 1696): Monthly Limit Meter (actual vs projected), Customer Controls, Predicted Month-End Spend, Month-to-Date Discretionary Spend, Category Trend Chart with category buckets, Recommendations section.
 - [ ] Chat interface (user 1696): usable multi-turn coach with **stateful memory**; MTD Spend, Limit, Projected/days-to-limit **prediction**, and **ranked recommendations** injected as grounded context.
-- [x] Validation hooks / unit tests cover clean helpers (`tests/clean_tests.ipynb`); expand later for schema/read-only/artifact contracts and e2e smoke for 1696.
+- [x] Interactive dashboard exists (`ui/app.py`) with client selector, MTD discretionary / utilization, category spend, patterns (partial rubric coverage).
+- [x] Validation hooks / unit tests: `tests/clean_tests.ipynb`, `tests/analytics_tests.ipynb`, `tests/ui_tests.ipynb`.
 
 ## Implementation Checklist
 
-- [x] Confirm `data/` schemas match this spec; document any drift and update join keys/handling rules (`validate_schema.ipynb`).
-- [x] Implement `data_processing/clean.ipynb` → flat artifacts under `artifacts/` + QA report (all-users NDJSON).
-- [x] Add `tests/clean_tests.ipynb` for clean helper unit tests.
-- [ ] Implement `data_processing/categorize.ipynb` with batching, caching, and MCC fallback; verify 100% transaction coverage for the focus user.
-- [ ] Implement `model/analytics.ipynb` so all dashboard figures are reproducible from artifacts; include unusual-transaction anomaly signals.
-- [ ] Implement `model/predict.ipynb` (days-to-limit / projected month-end overspend risk) with cold-start fallback; write metrics as flat files under `artifacts/`.
-- [ ] Implement `model/recommend.ipynb` with deterministic impact ranking (“days gained”).
-- [ ] Implement `model/notify.ipynb` for 70/85/95 budget-threshold anomaly events as flat files under `artifacts/`.
-- [ ] Implement `ui/` (spending dashboard + conversational coach) reading only `artifacts/`; persist chat as a flat file under `artifacts/`; show degraded mode on LLM outage.
-- [ ] Expand `tests/`: read-only guarantee for `data/`, schema checks, artifact contracts, end-to-end smoke for `client_id=1696`.
+- [x] Confirm `data/` schemas (`validate_schema.ipynb`).
+- [x] Implement `data_processing/clean.ipynb` → all-users NDJSON + QA report.
+- [x] Add `tests/clean_tests.ipynb`.
+- [x] Implement analytics backend (`model/analytics_core.py`) + batch notebook (`model/analytics.ipynb`).
+- [x] Implement Streamlit frontend (`ui/app.py`) that calls analytics backend for any `client_id`.
+- [x] Add `tests/analytics_tests.ipynb` and `tests/ui_tests.ipynb`.
+- [x] Gitignore regenerable `artifacts/*` (keep `.gitkeep` only).
+- [ ] Implement `data_processing/categorize.ipynb` (LLM + cache + MCC fallback); wire analytics to prefer LLM categories.
+- [ ] Implement `model/predict` (days-to-limit / projected month-end) with cold-start fallback.
+- [ ] Implement `model/recommend` with deterministic impact ranking (“days gained”).
+- [ ] Implement `model/notify` for 70/85/95 events (optional if UI thresholds suffice for v1).
+- [ ] Extend UI: limit meter actual vs projected, predicted month-end, recommendations section.
+- [ ] Implement multi-turn grounded coach with session memory under `artifacts/`.
+- [ ] Expand tests: artifact contracts + end-to-end smoke for `client_id=1696`.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import plotly.express as px
@@ -26,8 +27,6 @@ from model.analytics_core import (  # noqa: E402
     run_analytics_for_client,
 )
 
-DEFAULT_CLIENT_ID = 1696
-
 
 def parse_client_ids(users_df: pd.DataFrame) -> list[int]:
     if "id" not in users_df.columns:
@@ -41,6 +40,65 @@ def parse_client_ids(users_df: pd.DataFrame) -> list[int]:
         .tolist()
     )
     return [int(x) for x in client_ids]
+
+
+def format_usd_yaxis(fig: Any, *, title: str = "Spend (USD)") -> Any:
+    fig.update_yaxes(title=title, tickprefix="$", tickformat=",.0f")
+    return fig
+
+
+def compute_monthly_category_trend(tx: pd.DataFrame, *, top_n: int = 8) -> pd.DataFrame:
+    """Monthly spend trend by category (positive spend only)."""
+    if not {"transaction_dt", "category"}.issubset(set(tx.columns)):
+        return pd.DataFrame(columns=["month", "category", "spend_usd"])
+
+    work = tx.loc[:, ["transaction_dt", "category", "amount_usd"]].copy()
+    work["transaction_dt"] = pd.to_datetime(work["transaction_dt"], errors="coerce")
+    work["amount_usd"] = pd.to_numeric(work["amount_usd"], errors="coerce")
+    work = work.loc[work["transaction_dt"].notna() & work["amount_usd"].notna()].copy()
+    if work.empty:
+        return pd.DataFrame(columns=["month", "category", "spend_usd"])
+
+    work["spend_usd"] = work["amount_usd"].where(work["amount_usd"] > 0, 0.0)
+    top_categories = (
+        work.groupby("category", dropna=False)["spend_usd"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(int(top_n))
+        .index.tolist()
+    )
+
+    work = work.loc[work["category"].isin(top_categories)].copy()
+    work["month"] = work["transaction_dt"].dt.to_period("M").astype(str)
+    trend = (
+        work.groupby(["month", "category"], dropna=False)["spend_usd"]
+        .sum()
+        .reset_index()
+        .sort_values(["month", "category"])
+    )
+    return trend
+
+
+def render_monthly_category_trend(
+    tx: pd.DataFrame, *, client_id: int, top_n: int = 8, key: str
+) -> None:
+    trend = compute_monthly_category_trend(tx, top_n=top_n)
+    if trend.empty:
+        st.info("Not enough data to plot monthly category spend trends.")
+        return
+
+    fig = px.line(
+        trend,
+        x="month",
+        y="spend_usd",
+        color="category",
+        title=f"Monthly Spend Trend by Category (Client {client_id})",
+        labels={"month": "Month", "spend_usd": "Spend (USD)", "category": "Category"},
+        markers=True,
+    )
+    format_usd_yaxis(fig)
+    fig.update_xaxes(tickangle=-45)
+    st.plotly_chart(fig, use_container_width=True, key=key)
 
 
 def main() -> None:
@@ -66,29 +124,8 @@ def main() -> None:
         st.error("No client ids found in `data/users.csv`.")
         st.stop()
 
-    default_index = client_ids.index(DEFAULT_CLIENT_ID) if DEFAULT_CLIENT_ID in client_ids else 0
-
     with st.sidebar:
-        st.subheader("Client")
-        selected_client_id = int(
-            st.selectbox(
-                "client_id",
-                options=client_ids,
-                index=default_index,
-                key="client_id_select",
-            )
-        )
-
-        prev_client = st.session_state.get("active_client_id")
-        if prev_client != selected_client_id:
-            st.session_state["active_client_id"] = selected_client_id
-            for key in list(st.session_state.keys()):
-                if key.startswith(("as_of_", "tx_start_", "tx_end_", "tx_category_")):
-                    del st.session_state[key]
-
-        if st.button("Clear analytics cache"):
-            clear_caches()
-            st.rerun()
+        selected_client_id = int(st.selectbox("client_id", options=client_ids, key="client_id_select"))
 
     with st.spinner(f"Loading client {selected_client_id} via analytics backend..."):
         try:
@@ -136,7 +173,6 @@ def main() -> None:
 
     computed = result["computed"]
     budget = computed["budget_utilization"]
-    spend_by_category = computed["spend_by_category_usd"]
     spend_by_mcc = computed["spend_by_mcc_usd"]
     patterns = computed["spending_patterns"]
 
@@ -157,19 +193,11 @@ def main() -> None:
         if util is not None:
             st.progress(min(max(float(util), 0.0), 1.0))
 
-        spend_cat_df = (
-            pd.DataFrame([{"category": k, "spend_usd": v} for k, v in spend_by_category.items()])
-            .sort_values("spend_usd", ascending=False)
-            .head(12)
-        )
-        st.plotly_chart(
-            px.bar(
-                spend_cat_df,
-                x="category",
-                y="spend_usd",
-                title=f"Top Categories (Client {selected_client_id})",
-            ),
-            use_container_width=True,
+        render_monthly_category_trend(
+            tx,
+            client_id=selected_client_id,
+            top_n=8,
+            key=f"monthly_category_trend_overview_{selected_client_id}",
         )
 
     with tab_transactions:
@@ -223,32 +251,26 @@ def main() -> None:
         )
 
     with tab_patterns:
-        by_month = patterns.get("by_month_usd", {})
-        if by_month:
-            df_month = (
-                pd.DataFrame([{"month": k, "spend_usd": v} for k, v in by_month.items()])
-                .sort_values("month")
-            )
-            st.plotly_chart(
-                px.line(
-                    df_month,
-                    x="month",
-                    y="spend_usd",
-                    title=f"Spend by Month (Client {selected_client_id})",
-                ),
-                use_container_width=True,
-            )
+        render_monthly_category_trend(
+            tx,
+            client_id=selected_client_id,
+            top_n=8,
+            key=f"monthly_category_trend_patterns_{selected_client_id}",
+        )
 
         by_dow = patterns.get("by_day_of_week_usd", {})
         if by_dow:
             df_dow = pd.DataFrame([{"day": k, "spend_usd": v} for k, v in by_dow.items()])
+            fig = px.bar(
+                df_dow,
+                x="day",
+                y="spend_usd",
+                title=f"Spend by Day of Week (Client {selected_client_id})",
+                labels={"day": "Day of week", "spend_usd": "Spend (USD)"},
+            )
+            format_usd_yaxis(fig)
             st.plotly_chart(
-                px.bar(
-                    df_dow,
-                    x="day",
-                    y="spend_usd",
-                    title=f"Spend by Day of Week (Client {selected_client_id})",
-                ),
+                fig,
                 use_container_width=True,
             )
 
