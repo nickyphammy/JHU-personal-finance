@@ -12,6 +12,7 @@ from typing import Any
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 # Allow `streamlit run ui/app.py` from project root
@@ -26,7 +27,6 @@ from importlib import reload  # noqa: E402
 reload(analytics_core)  # avoid stale Streamlit imports after backend edits
 reload(predict_core)
 
-clear_caches = analytics_core.clear_caches
 load_transaction_records = analytics_core.load_transaction_records
 load_transactions_for_client = analytics_core.load_transactions_for_client
 project_root = analytics_core.project_root
@@ -52,6 +52,206 @@ def parse_client_ids(users_df: pd.DataFrame) -> list[int]:
 def format_usd_yaxis(fig: Any, *, title: str = "Spend (USD)") -> Any:
     fig.update_yaxes(title=title, tickprefix="$", tickformat=",.0f")
     return fig
+
+
+# Matches the “Spending by Category” card palette (donut + legend).
+CATEGORY_DONUT_COLORS = [
+    "#6C5CE7",  # purple
+    "#0984E3",  # blue
+    "#00B894",  # teal
+    "#E17055",  # coral/orange
+    "#FDCB6E",  # yellow
+    "#E84393",  # pink
+    "#00CEC9",  # cyan
+    "#B2BEC3",  # grey (Other)
+]
+
+
+def compute_category_share(spend_by_category: dict[str, float], *, top_n: int = 5) -> pd.DataFrame:
+    if not spend_by_category:
+        return pd.DataFrame(columns=["category", "spend_usd", "share_pct"])
+
+    df = pd.DataFrame(
+        [{"category": str(k), "spend_usd": float(v)} for k, v in spend_by_category.items()]
+    ).sort_values("spend_usd", ascending=False)
+
+    total = float(df["spend_usd"].sum())
+    if total <= 0:
+        df["share_pct"] = 0.0
+        return df.loc[:, ["category", "spend_usd", "share_pct"]]
+
+    head = df.head(int(top_n)).copy()
+    tail = df.iloc[int(top_n) :].copy()
+    if not tail.empty:
+        other = pd.DataFrame(
+            [{"category": "Other", "spend_usd": float(tail["spend_usd"].sum())}]
+        )
+        head = pd.concat([head, other], ignore_index=True)
+
+    head["share_pct"] = (head["spend_usd"] / total) * 100.0
+    return head.loc[:, ["category", "spend_usd", "share_pct"]].reset_index(drop=True)
+
+
+def compute_mtd_category_spend(
+    tx: pd.DataFrame, *, as_of_date: Any
+) -> dict[str, float]:
+    """Positive MTD spend by category through as_of_date (inclusive)."""
+    if not {"transaction_dt", "category", "amount_usd"}.issubset(set(tx.columns)):
+        return {}
+
+    as_of = pd.to_datetime(as_of_date).normalize()
+    month_start = as_of.replace(day=1)
+    work = tx.loc[:, ["transaction_dt", "category", "amount_usd"]].copy()
+    work["transaction_dt"] = pd.to_datetime(work["transaction_dt"], errors="coerce")
+    work["amount_usd"] = pd.to_numeric(work["amount_usd"], errors="coerce")
+    work = work.loc[
+        work["transaction_dt"].notna()
+        & work["amount_usd"].notna()
+        & (work["transaction_dt"] >= month_start)
+        & (work["transaction_dt"] <= as_of)
+    ].copy()
+    if work.empty:
+        return {}
+
+    work["spend_usd"] = work["amount_usd"].where(work["amount_usd"] > 0, 0.0)
+    by_cat = work.groupby("category", dropna=False)["spend_usd"].sum().sort_values(ascending=False)
+    return {str(k): float(v) for k, v in by_cat.items() if float(v) > 0}
+
+
+def render_spending_by_category_donut(
+    spend_by_category: dict[str, float],
+    *,
+    client_id: int,
+    top_n: int = 5,
+    key: str,
+) -> None:
+    """Donut + right-side legend card (category, amount, %)."""
+    share = compute_category_share(spend_by_category, top_n=top_n)
+    if share.empty:
+        st.info("No category spend available.")
+        return
+
+    total = float(share["spend_usd"].sum())
+    colors = [
+        CATEGORY_DONUT_COLORS[i % len(CATEGORY_DONUT_COLORS)] for i in range(len(share))
+    ]
+    # Keep “Other” grey when present
+    for i, cat in enumerate(share["category"].tolist()):
+        if str(cat).lower() in {"other", "other/uncategorized"}:
+            colors[i] = "#B2BEC3"
+
+    with st.container(border=True):
+        st.markdown(
+            "<h5 style='color:#FFFFFF;margin:0 0 0.5rem 0;'>Spending by Category</h5>",
+            unsafe_allow_html=True,
+        )
+        chart_col, legend_col = st.columns([1.15, 1.0], gap="large")
+
+        with chart_col:
+            fig = go.Figure(
+                data=[
+                    go.Pie(
+                        labels=share["category"].tolist(),
+                        values=share["spend_usd"].tolist(),
+                        hole=0.64,
+                        marker=dict(colors=colors, line=dict(color="#FFFFFF", width=3)),
+                        textinfo="none",
+                        sort=False,
+                        direction="clockwise",
+                        hovertemplate=(
+                            "<b>%{label}</b><br>$%{value:,.2f}"
+                            "<br>%{percent}<extra></extra>"
+                        ),
+                    )
+                ]
+            )
+            fig.update_layout(
+                showlegend=False,
+                margin=dict(t=8, b=8, l=8, r=8),
+                height=300,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                annotations=[
+                    dict(
+                        text=(
+                            f"<b>${total:,.2f}</b>"
+                            "<br><span style='color:#FFFFFF;font-size:12px;"
+                            "letter-spacing:0.04em;opacity:0.85'>TOTAL</span>"
+                        ),
+                        x=0.5,
+                        y=0.5,
+                        xref="paper",
+                        yref="paper",
+                        showarrow=False,
+                        font=dict(size=22, color="#FFFFFF", family="Inter, sans-serif"),
+                        align="center",
+                    )
+                ],
+            )
+            st.plotly_chart(fig, use_container_width=True, key=key)
+
+        with legend_col:
+            st.write("")  # vertical align with chart title spacing
+            for color, row in zip(colors, share.itertuples(index=False), strict=True):
+                cat, spend_usd, share_pct = row.category, row.spend_usd, row.share_pct
+                st.markdown(
+                    f"""
+                    <div style="display:flex;align-items:center;justify-content:space-between;
+                                padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.15);">
+                      <div style="display:flex;align-items:center;gap:0.55rem;min-width:0;">
+                        <span style="width:10px;height:10px;border-radius:50%;
+                                     background:{color};display:inline-block;flex-shrink:0;"></span>
+                        <span style="color:#FFFFFF;font-size:0.95rem;font-weight:500;
+                                     white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                          {cat}
+                        </span>
+                      </div>
+                      <div style="display:flex;gap:1.1rem;align-items:baseline;flex-shrink:0;
+                                  font-variant-numeric:tabular-nums;">
+                        <span style="color:#FFFFFF;font-weight:600;">${spend_usd:,.2f}</span>
+                        <span style="color:#FFFFFF;min-width:3.2rem;text-align:right;opacity:0.9;">
+                          {share_pct:.1f}%
+                        </span>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        with st.expander("View full breakdown →", expanded=False):
+            full = (
+                pd.DataFrame(
+                    [
+                        {"category": str(k), "spend_usd": float(v)}
+                        for k, v in spend_by_category.items()
+                    ]
+                )
+                .sort_values("spend_usd", ascending=False)
+                .reset_index(drop=True)
+            )
+            full_total = float(full["spend_usd"].sum()) if not full.empty else 0.0
+            if full_total > 0:
+                full["share_pct"] = (full["spend_usd"] / full_total) * 100.0
+            else:
+                full["share_pct"] = 0.0
+            full["spend_usd"] = full["spend_usd"].map(lambda x: f"${x:,.2f}")
+            full["share_pct"] = full["share_pct"].map(lambda x: f"{x:.1f}%")
+            st.dataframe(
+                full.rename(
+                    columns={
+                        "category": "Category",
+                        "spend_usd": "Spend",
+                        "share_pct": "Share",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.markdown(
+                f"<p style='color:#FFFFFF;opacity:0.85;font-size:0.85rem;'>"
+                f"Client {client_id} · total ${total:,.2f} shown in chart</p>",
+                unsafe_allow_html=True,
+            )
 
 
 def compute_monthly_category_trend(tx: pd.DataFrame, *, top_n: int = 8) -> pd.DataFrame:
@@ -244,6 +444,7 @@ def main() -> None:
 
     computed = result["computed"]
     budget = computed["budget_utilization"]
+    spend_by_category = computed["spend_by_category_usd"]
     spend_by_mcc = computed["spend_by_mcc_usd"]
     patterns = computed["spending_patterns"]
 
@@ -316,12 +517,24 @@ def main() -> None:
         elif predict_error:
             st.warning(predict_error)
 
-        render_monthly_category_trend(
-            tx,
-            client_id=selected_client_id,
-            top_n=8,
-            key=f"monthly_category_trend_overview_{selected_client_id}",
-        )
+        left, right = st.columns([1.15, 1.35], gap="large")
+        with left:
+            mtd_category = compute_mtd_category_spend(tx, as_of_date=as_of)
+            render_spending_by_category_donut(
+                mtd_category if mtd_category else spend_by_category,
+                client_id=selected_client_id,
+                top_n=5,
+                key=f"category_donut_{selected_client_id}",
+            )
+            if mtd_category:
+                st.caption("MTD spend by category through AS_OF_DATE.")
+        with right:
+            render_monthly_category_trend(
+                tx,
+                client_id=selected_client_id,
+                top_n=8,
+                key=f"monthly_category_trend_overview_{selected_client_id}",
+            )
 
     with tab_forecast:
         st.subheader("Discretionary runway forecast")
