@@ -73,12 +73,14 @@ Create a `.env` file in the project root (never commit it):
 ```sh
 LLM_PROVIDER=openai
 LLM_API_KEY=...
-LLM_MODEL=gpt-4o-mini
+LLM_MODEL=gpt-5.2
+OPENAI_BASE_URL=https://your-gateway.example/v1   # required if using a non-OpenAI endpoint / proxy token
 DATA_DIR=data
 ARTIFACTS_DIR=artifacts
 ```
 
 Optional: `AS_OF_DATE=YYYY-MM-DD` to override the default “today” (user’s max transaction date).
+`LLM_API_BASE` is accepted as an alias for `OPENAI_BASE_URL`.
 
 ### Run the current pipeline
 
@@ -117,6 +119,7 @@ All outputs are under `artifacts/` (never under `data/`). Regenerable and gitign
 | Artifact | Produced by | Notes |
 |---|---|---|
 | `artifacts/transactions_enriched.json` | `data_processing/clean.ipynb` | NDJSON for **all users** (large) |
+| `artifacts/transaction_categories.jsonl` | `data_processing/categorize.ipynb` | Category mapping (LLM with MCC fallback; cached) |
 | `artifacts/qa_report.json` | `data_processing/clean.ipynb` | QA counters + cleaning assumptions |
 | `artifacts/spend_by_category_{client_id}.json` | `model/analytics_core.py` (UI or `analytics.ipynb`) | Category spend |
 | `artifacts/spend_by_mcc_{client_id}.json` | `model/analytics_core.py` | MCC spend |

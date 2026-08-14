@@ -26,7 +26,7 @@ V1 is scoped for a six-week build: local Streamlit deployment, no model fine-tun
 
 Demonstrate that **four distinct AI capabilities** can be integrated into a **single, coherent, data-driven pipeline** rather than treated as isolated exercises:
 
-1. **LLM-based classification** — transaction auto-categorization (`data_processing/categorize.ipynb`) — *planned*
+1. **LLM-based classification** — transaction auto-categorization (`data_processing/categorize.ipynb`) — *implemented (optional step; cached)*
 2. **Interactive data visualization** — Streamlit spending dashboard (`ui/app.py`) — *done (analytics views)*
 3. **Regression-based prediction** — days-to-limit / projected month-end spend (`model/predict`*) — *planned*
 4. **Stateful memory** — multi-turn coach session memory grounded in artifacts (`ui/` coach + `artifacts/session_{client_id}.json`) — *planned*
@@ -80,7 +80,7 @@ data/ (read-only)
 
 | Product pillar          | Where it lives                                           | Status                                                |
 | ----------------------- | -------------------------------------------------------- | ----------------------------------------------------- |
-| LLM auto-categorization | `data_processing/categorize.ipynb`                       | Planned (interim: rule-based MCC in `analytics_core`) |
+| LLM auto-categorization | `data_processing/categorize.ipynb`                       | Done (analytics currently still uses rule-based MCC unless wired to read mapping) |
 | Spending analytics      | `model/analytics_core.py` + `model/analytics.ipynb`      | Done                                                  |
 | Anomaly detection       | predict runway risk (done) / notify thresholds (planned) | Partial                                               |
 | Conversational coaching | `ui/` coach (grounded in artifacts)                      | Planned                                               |
@@ -122,6 +122,8 @@ Inputs are read only from `data/`. All derived outputs are written as **flat fil
 ├── artifacts/                    # Derived outputs only (local / gitignored)
 │   ├── .gitkeep
 │   ├── transactions_enriched.json          # NDJSON; all users
+│   ├── transaction_categories.jsonl        # LLM/MCC category mapping (all users)
+│   ├── llm_cache/                          # diskcache for LLM categorization
 │   ├── qa_report.json
 │   ├── spend_by_category_{client_id}.json
 │   ├── spend_by_mcc_{client_id}.json
@@ -133,7 +135,7 @@ Inputs are read only from `data/`. All derived outputs are written as **flat fil
 ├── data_processing/
 │   ├── validate_schema.ipynb     # done
 │   ├── clean.ipynb               # done — clean/join all users
-│   └── categorize.ipynb          # planned — LLM categorization
+│   └── categorize.ipynb          # done — LLM categorization + MCC fallback + cache
 ├── model/
 │   ├── __init__.py
 │   ├── analytics_core.py         # done — shared analytics backend
@@ -227,7 +229,7 @@ Placement rules (business-justified):
 | Analytics batch notebook | `model/analytics.ipynb`                                                                     | Done                        | Batch runner around `analytics_core` (default `CLIENT_ID=1696`)                                                         | Same analytics artifacts                                                                                               |
 | UI frontend              | `ui/app.py`                                                                                 | Done (dashboard + forecast) | Streamlit: client select, analytics + prediction backends, charts/tables                                                | Reads/triggers analytics + `runway_{id}.json`                                                                          |
 | Helper tests             | `tests/clean_tests.ipynb`, `analytics_tests.ipynb`, `predict_tests.ipynb`, `ui_tests.ipynb` | Done                        | Unit tests for clean helpers, analytics mapping, predict features, UI client-id parsing                                 | Console PASS / fail                                                                                                    |
-| Categorization (LLM)     | `data_processing/categorize.ipynb`                                                          | Planned                     | Batched LLM categorization + cache + MCC fallback                                                                       | `categorized_{client_id}.*`                                                                                            |
+| Categorization (LLM)     | `data_processing/categorize.ipynb` + `data_processing/categorize_core.py`                   | Done                        | Batched LLM categorization + cache + MCC fallback                                                                       | `transaction_categories.jsonl` (or `transaction_categories_{id}.jsonl`), `llm_cache/`                                 |
 | Prediction               | `model/predict_core.py` + `model/predict.ipynb`                                             | Done                        | All-user Ridge regression → projected month-end discretionary, overspend risk, days-to-limit; UI scores selected client | `runway_model.pkl`, `runway_model_metrics.json`, `runway_{id}.json`                                                    |
 | Recommendations          | `model/recommend.ipynb`                                                                     | Planned                     | Ranked category reductions (“days gained”)                                                                              | `recommendations_{id}.json`                                                                                            |
 | Notifications            | `model/notify.ipynb`                                                                        | Planned                     | 70/85/95 utilization events                                                                                             | `events_{id}.jsonl`                                                                                                    |
@@ -294,6 +296,7 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 - [ ] Dashboard (user 1696): Monthly Limit Meter (actual vs projected), Customer Controls, Predicted Month-End Spend, Month-to-Date Discretionary Spend, Category Trend Chart with category buckets, Recommendations section.
 - [ ] Chat interface (user 1696): usable multi-turn coach with **stateful memory**; MTD Spend, Limit, Projected/days-to-limit **prediction**, and **ranked recommendations** injected as grounded context.
 - [x] Interactive dashboard exists (`ui/app.py`) with client selector, MTD discretionary / utilization, category spend, patterns (partial rubric coverage).
+- [x] LLM categorization implemented with MCC fallback + disk cache (`data_processing/categorize.ipynb`) and tested (`tests/categorize_tests.ipynb`).
 - [x] Validation hooks / unit tests: `tests/clean_tests.ipynb`, `tests/analytics_tests.ipynb`, `tests/ui_tests.ipynb`.
 
 
@@ -309,7 +312,9 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 - [x] Gitignore regenerable `artifacts/*` (keep `.gitkeep` only).
 - [x] Implement `model/predict` (days-to-limit / projected month-end) + wire Forecast into UI.
 - [x] Add `tests/predict_tests.ipynb`.
-- [ ] Implement `data_processing/categorize.ipynb` (LLM + cache + MCC fallback); wire analytics to prefer LLM categories.
+- [x] Implement `data_processing/categorize.ipynb` (LLM + cache + MCC fallback).
+- [x] Add `tests/categorize_tests.ipynb`.
+- [ ] Wire analytics/UI to optionally join `transaction_categories.jsonl` for category display.
 - [ ] Implement `model/recommend` with deterministic impact ranking (“days gained”).
 - [ ] Implement `model/notify` for 70/85/95 events (optional if UI thresholds suffice for v1).
 - [ ] Extend UI: recommendations section (limit meter / predicted month-end already in Forecast).
