@@ -6,6 +6,8 @@ This file loads clients, calls backends, and renders charts/tables.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -22,10 +24,12 @@ if str(ROOT) not in sys.path:
 
 import model.analytics_core as analytics_core  # noqa: E402
 import model.predict_core as predict_core  # noqa: E402
+import model.recommend_core as recommend_core  # noqa: E402
 from importlib import reload  # noqa: E402
 
 reload(analytics_core)  # avoid stale Streamlit imports after backend edits
 reload(predict_core)
+reload(recommend_core)
 
 load_transaction_records = analytics_core.load_transaction_records
 load_transactions_for_client = analytics_core.load_transactions_for_client
@@ -33,6 +37,8 @@ project_root = analytics_core.project_root
 run_analytics_for_client = analytics_core.run_analytics_for_client
 run_prediction_for_client = predict_core.run_prediction_for_client
 default_predict_paths = predict_core.default_paths
+generate_recommendations = recommend_core.generate_recommendations
+write_recommendation_feedback = recommend_core.write_feedback
 
 
 def parse_client_ids(users_df: pd.DataFrame) -> list[int]:
@@ -52,6 +58,92 @@ def parse_client_ids(users_df: pd.DataFrame) -> list[int]:
 def format_usd_yaxis(fig: Any, *, title: str = "Spend (USD)") -> Any:
     fig.update_yaxes(title=title, tickprefix="$", tickformat=",.0f")
     return fig
+
+
+def monthly_limit_overrides_path(root: Path) -> Path:
+    return root / "artifacts" / "monthly_limit_overrides.json"
+
+
+def _assert_write_under_artifacts(path: Path, *, root: Path) -> None:
+    """Hard guard: never write under data/ (source CSVs stay read-only)."""
+    resolved = path.resolve()
+    art = (root / "artifacts").resolve()
+    data = (root / "data").resolve()
+    if resolved == data or data in resolved.parents:
+        raise RuntimeError(f"Refusing to write under data/: {resolved}")
+    if resolved != art and art not in resolved.parents:
+        raise RuntimeError(f"Writes must stay under artifacts/: {resolved}")
+
+
+def load_monthly_limit_overrides(root: Path) -> dict[str, float]:
+    path = monthly_limit_overrides_path(root)
+    if not path.exists():
+        return {}
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    out: dict[str, float] = {}
+    for k, v in obj.items():
+        try:
+            out[str(k)] = float(v)
+        except Exception:
+            continue
+    return out
+
+
+def write_monthly_limit_override(root: Path, *, client_id: int, limit_usd: float) -> Path:
+    overrides = load_monthly_limit_overrides(root)
+    overrides[str(int(client_id))] = float(limit_usd)
+    path = monthly_limit_overrides_path(root)
+    _assert_write_under_artifacts(path, root=root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Write via a temp file inside artifacts/ (never under data/).
+    tmp_path = path.parent / f".monthly_limit_overrides.{os.getpid()}.tmp"
+    try:
+        tmp_path.write_text(json.dumps(overrides, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+    return path
+
+
+def clear_monthly_limit_override(root: Path, *, client_id: int) -> Path:
+    overrides = load_monthly_limit_overrides(root)
+    overrides.pop(str(int(client_id)), None)
+    path = monthly_limit_overrides_path(root)
+    _assert_write_under_artifacts(path, root=root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not overrides:
+        if path.exists():
+            path.unlink()
+        return path
+    tmp_path = path.parent / f".monthly_limit_overrides.{os.getpid()}.tmp"
+    try:
+        tmp_path.write_text(json.dumps(overrides, indent=2, sort_keys=True), encoding="utf-8")
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+    return path
+
+
+def extract_baseline_monthly_limit(tx: pd.DataFrame) -> float | None:
+    if "monthly_discretionary_limit_usd" not in tx.columns:
+        return None
+    s = pd.to_numeric(tx["monthly_discretionary_limit_usd"], errors="coerce").dropna()
+    if s.empty:
+        return None
+    return float(s.iloc[0])
 
 
 # Matches the “Spending by Category” card palette (donut + legend).
@@ -419,6 +511,11 @@ def main() -> None:
     min_date = min_dt.date()
     max_date = max_dt.date()
 
+    baseline_limit = extract_baseline_monthly_limit(tx)
+    overrides = load_monthly_limit_overrides(root)
+    override_limit = overrides.get(str(int(selected_client_id)))
+    effective_limit = override_limit if override_limit is not None else baseline_limit
+
     st.subheader(f"Client {selected_client_id}")
     st.caption(
         f"{len(tx):,} transactions · {min_date} → {max_date} · "
@@ -439,6 +536,51 @@ def main() -> None:
         max_value=max_date,
         key=f"as_of_{selected_client_id}",
     )
+
+    with st.container(border=True):
+        st.markdown("##### Customer controls")
+        st.caption(
+            "Set the monthly discretionary limit used for analytics + forecast. "
+            "Saved to `artifacts/monthly_limit_overrides.json` only — `data/` is never modified."
+        )
+        if baseline_limit is not None:
+            st.caption(f"Baseline from `data/users.csv`: ${baseline_limit:,.2f}")
+        if override_limit is not None:
+            st.caption(f"Active override: ${override_limit:,.2f}")
+
+        ctrl1, ctrl2, ctrl3 = st.columns([2.2, 1, 1])
+        with ctrl1:
+            limit_input = st.number_input(
+                "Monthly discretionary limit (USD)",
+                min_value=0.0,
+                value=float(effective_limit) if effective_limit is not None else 0.0,
+                step=50.0,
+                format="%.2f",
+                key=f"limit_override_input_{selected_client_id}",
+            )
+        with ctrl2:
+            st.write("")
+            st.write("")
+            if st.button("Save limit", key=f"save_limit_{selected_client_id}", use_container_width=True):
+                if limit_input <= 0:
+                    st.error("Limit must be > 0.")
+                else:
+                    write_monthly_limit_override(
+                        root, client_id=selected_client_id, limit_usd=float(limit_input)
+                    )
+                    st.success("Saved override.")
+                    st.rerun()
+        with ctrl3:
+            st.write("")
+            st.write("")
+            if st.button("Reset to baseline", key=f"clear_limit_{selected_client_id}", use_container_width=True):
+                clear_monthly_limit_override(root, client_id=selected_client_id)
+                st.success("Cleared override.")
+                st.rerun()
+
+    if effective_limit is not None:
+        tx = tx.copy()
+        tx["monthly_discretionary_limit_usd"] = float(effective_limit)
 
     with st.spinner("Running analytics backend (writes artifacts)..."):
         result = run_analytics_for_client(
@@ -494,6 +636,16 @@ def main() -> None:
         util_pct = (util * 100.0) if util is not None else None
         c4.metric("Utilization", f"{util_pct:.1f}%" if util_pct is not None else "N/A")
 
+        if override_limit is not None:
+            st.caption(
+                f"Using customer override ${override_limit:,.2f}"
+                + (
+                    f" (baseline ${baseline_limit:,.2f})."
+                    if baseline_limit is not None
+                    else "."
+                )
+            )
+
         if util is not None:
             st.progress(min(max(float(util), 0.0), 1.0))
 
@@ -523,6 +675,55 @@ def main() -> None:
                 st.progress(min(meter, 1.0))
         elif predict_error:
             st.warning(predict_error)
+
+        st.subheader("Recommendations")
+        recs = generate_recommendations(
+            tx,
+            client_id=selected_client_id,
+            as_of_date=pd.to_datetime(as_of).date(),
+            monthly_limit_usd=float(lim) if lim is not None else None,
+            root=root,
+            max_recommendations=3,
+        )
+        if not recs:
+            st.info("No recommendations available yet for this client/date.")
+        else:
+            for rec in recs:
+                with st.container(border=True):
+                    st.markdown(f"**{rec.title}**")
+                    if rec.estimated_monthly_savings_usd > 0:
+                        st.caption(
+                            f"Estimated monthly savings: ${rec.estimated_monthly_savings_usd:,.2f}"
+                        )
+                    st.write(rec.action)
+                    st.caption(rec.rationale)
+                    b1, b2 = st.columns(2)
+                    if b1.button(
+                        "Accept",
+                        key=f"rec_accept_{selected_client_id}_{rec.rec_id}",
+                        use_container_width=True,
+                    ):
+                        write_recommendation_feedback(
+                            root,
+                            client_id=selected_client_id,
+                            rec_id=rec.rec_id,
+                            status="accepted",
+                        )
+                        st.success("Saved feedback. Refreshing…")
+                        st.rerun()
+                    if b2.button(
+                        "Dismiss",
+                        key=f"rec_dismiss_{selected_client_id}_{rec.rec_id}",
+                        use_container_width=True,
+                    ):
+                        write_recommendation_feedback(
+                            root,
+                            client_id=selected_client_id,
+                            rec_id=rec.rec_id,
+                            status="dismissed",
+                        )
+                        st.success("Saved feedback. Refreshing…")
+                        st.rerun()
 
         left, right = st.columns([1.15, 1.35], gap="large")
         with left:
