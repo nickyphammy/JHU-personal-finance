@@ -165,10 +165,24 @@ def compute_analytics(df: pd.DataFrame, *, as_of_date: pd.Timestamp) -> dict[str
 
     work = work.loc[work["transaction_dt"].notna()].copy()
     work["month"] = work["transaction_dt"].dt.to_period("M").astype(str)
+    work["txn_date"] = work["transaction_dt"].dt.normalize()
     work["dow"] = work["transaction_dt"].dt.day_name()
 
     by_month = work.groupby("month")["spend_usd"].sum().sort_index()
-    by_dow = work.groupby("dow")["spend_usd"].sum()
+
+    # Average daily spend by weekday (not lifetime totals for every Monday, etc.)
+    daily = work.groupby(["txn_date", "dow"], dropna=False)["spend_usd"].sum().reset_index()
+    avg_by_dow = daily.groupby("dow", dropna=False)["spend_usd"].mean()
+    dow_order = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ]
+    by_dow_avg = {d: float(avg_by_dow[d]) for d in dow_order if d in avg_by_dow.index}
 
     top_merchants = (
         work.groupby(["merchant_id", "merchant_city", "merchant_state"], dropna=False)["spend_usd"]
@@ -180,7 +194,9 @@ def compute_analytics(df: pd.DataFrame, *, as_of_date: pd.Timestamp) -> dict[str
     patterns = {
         "total_spend_usd": float(work["spend_usd"].sum()),
         "by_month_usd": {str(k): float(v) for k, v in by_month.items()},
-        "by_day_of_week_usd": {str(k): float(v) for k, v in by_dow.items()},
+        "avg_daily_spend_by_day_of_week_usd": by_dow_avg,
+        # Backward-compatible alias used by older UI code
+        "by_day_of_week_usd": by_dow_avg,
         "top_merchants_usd": [
             {
                 "merchant_id": (None if pd.isna(k[0]) else str(k[0])),

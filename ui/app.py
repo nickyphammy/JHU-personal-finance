@@ -1,7 +1,7 @@
 """Streamlit frontend only.
 
-All analytics computation lives in `model/analytics_core.py`.
-This file loads clients, calls the backend, and renders charts/tables.
+Analytics live in `model/analytics_core.py`; prediction in `model/predict_core.py`.
+This file loads clients, calls backends, and renders charts/tables.
 """
 
 from __future__ import annotations
@@ -19,13 +19,20 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model.analytics_core import (  # noqa: E402
-    clear_caches,
-    load_transaction_records,
-    load_transactions_for_client,
-    project_root,
-    run_analytics_for_client,
-)
+import model.analytics_core as analytics_core  # noqa: E402
+import model.predict_core as predict_core  # noqa: E402
+from importlib import reload  # noqa: E402
+
+reload(analytics_core)  # avoid stale Streamlit imports after backend edits
+reload(predict_core)
+
+clear_caches = analytics_core.clear_caches
+load_transaction_records = analytics_core.load_transaction_records
+load_transactions_for_client = analytics_core.load_transactions_for_client
+project_root = analytics_core.project_root
+run_analytics_for_client = analytics_core.run_analytics_for_client
+run_prediction_for_client = predict_core.run_prediction_for_client
+default_predict_paths = predict_core.default_paths
 
 
 def parse_client_ids(users_df: pd.DataFrame) -> list[int]:
@@ -101,10 +108,74 @@ def render_monthly_category_trend(
     st.plotly_chart(fig, use_container_width=True, key=key)
 
 
+DOW_ORDER = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
+
+
+def compute_avg_daily_spend_by_dow(tx: pd.DataFrame) -> pd.DataFrame:
+    """Average spend on calendar days for each weekday (not lifetime weekday totals)."""
+    if not {"transaction_dt", "amount_usd"}.issubset(set(tx.columns)):
+        return pd.DataFrame(columns=["day", "avg_daily_spend_usd"])
+
+    work = tx.loc[:, ["transaction_dt", "amount_usd"]].copy()
+    work["transaction_dt"] = pd.to_datetime(work["transaction_dt"], errors="coerce")
+    work["amount_usd"] = pd.to_numeric(work["amount_usd"], errors="coerce")
+    work = work.loc[work["transaction_dt"].notna() & work["amount_usd"].notna()].copy()
+    if work.empty:
+        return pd.DataFrame(columns=["day", "avg_daily_spend_usd"])
+
+    work["spend_usd"] = work["amount_usd"].where(work["amount_usd"] > 0, 0.0)
+    work["txn_date"] = work["transaction_dt"].dt.normalize()
+    work["day"] = work["transaction_dt"].dt.day_name()
+
+    daily = work.groupby(["txn_date", "day"], dropna=False)["spend_usd"].sum().reset_index()
+    avg = daily.groupby("day", dropna=False)["spend_usd"].mean()
+    return pd.DataFrame(
+        [{"day": d, "avg_daily_spend_usd": float(avg[d])} for d in DOW_ORDER if d in avg.index]
+    )
+
+
+def render_avg_daily_spend_by_dow(tx: pd.DataFrame, *, client_id: int, key: str) -> None:
+    df_dow = compute_avg_daily_spend_by_dow(tx)
+    if df_dow.empty:
+        st.info("Not enough data to plot average daily spend by weekday.")
+        return
+
+    fig = px.bar(
+        df_dow,
+        x="day",
+        y="avg_daily_spend_usd",
+        title=f"Average Daily Spend by Day of Week (Client {client_id})",
+        labels={"day": "Day of week", "avg_daily_spend_usd": "Avg daily spend (USD)"},
+        category_orders={"day": DOW_ORDER},
+    )
+    format_usd_yaxis(fig, title="Avg daily spend (USD)")
+    # Keep y-axis near typical daily amounts (hundreds), not lifetime totals
+    ymax = float(df_dow["avg_daily_spend_usd"].max())
+    fig.update_yaxes(range=[0, max(ymax * 1.25, 1.0)])
+    st.plotly_chart(fig, use_container_width=True, key=key)
+    example = df_dow.iloc[0]
+    st.caption(
+        "Each bar is the mean spend across calendar days for that weekday "
+        f"(example: typical {example['day']} ≈ ${example['avg_daily_spend_usd']:,.0f}). "
+        "This is NOT the sum of all historical Mondays/Tuesdays across years."
+    )
+
+
 def main() -> None:
     st.set_page_config(page_title="ClearLedger Coach v1", layout="wide")
     st.title("ClearLedger — Personal Finance Coach v1")
-    st.caption("Frontend UI · analytics computed by `model/analytics_core.py`")
+    st.caption(
+        "Frontend UI · analytics via `model/analytics_core.py` · "
+        "forecast via `model/predict_core.py`"
+    )
 
     root = project_root()
     users_csv = root / "data" / "users.csv"
@@ -176,14 +247,39 @@ def main() -> None:
     spend_by_mcc = computed["spend_by_mcc_usd"]
     patterns = computed["spending_patterns"]
 
-    tab_overview, tab_transactions, tab_patterns, tab_mcc = st.tabs(
-        ["Overview", "Transactions", "Patterns", "MCC Breakdown"]
+    prediction: dict[str, Any] | None = None
+    predict_error: str | None = None
+    model_pkl = default_predict_paths(root)["model_pkl"]
+    lim = budget.get("monthly_discretionary_limit_usd")
+    if not model_pkl.exists():
+        predict_error = (
+            "Missing trained model `artifacts/runway_model.pkl`. "
+            "Run `model/predict.ipynb` once to train on all users."
+        )
+    elif lim is None:
+        predict_error = "No monthly discretionary limit available for this client."
+    else:
+        with st.spinner("Running prediction backend..."):
+            try:
+                pred_result = run_prediction_for_client(
+                    selected_client_id,
+                    as_of_date=as_of,
+                    transactions=tx,
+                    monthly_limit_usd=float(lim),
+                    write_artifacts=True,
+                    root=root,
+                )
+                prediction = pred_result["prediction"]
+            except Exception as exc:  # noqa: BLE001 - surface backend errors in UI
+                predict_error = str(exc)
+
+    tab_overview, tab_forecast, tab_transactions, tab_patterns, tab_mcc = st.tabs(
+        ["Overview", "Forecast", "Transactions", "Patterns", "MCC Breakdown"]
     )
 
     with tab_overview:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("As of", budget.get("as_of_date"))
-        lim = budget.get("monthly_discretionary_limit_usd")
         c2.metric("Monthly Discretionary Limit", f"${lim:,.2f}" if lim is not None else "N/A")
         c3.metric("MTD Discretionary Spend", f"${budget.get('mtd_discretionary_spend_usd'):,.2f}")
         util = budget.get("utilization_pct")
@@ -193,12 +289,126 @@ def main() -> None:
         if util is not None:
             st.progress(min(max(float(util), 0.0), 1.0))
 
+        if prediction is not None:
+            st.subheader("Month-end forecast")
+            p1, p2, p3, p4 = st.columns(4)
+            projected = prediction.get("predicted_month_end_discretionary_spend_usd")
+            p1.metric(
+                "Projected month-end",
+                f"${projected:,.2f}" if projected is not None else "N/A",
+            )
+            days_left = prediction.get("days_to_limit_estimate")
+            p2.metric(
+                "Days to limit",
+                "N/A" if days_left is None else str(days_left),
+            )
+            risk = prediction.get("overspend_risk")
+            p3.metric("Overspend risk", "Yes" if risk else "No")
+            proj_util = prediction.get("projected_utilization_pct")
+            p4.metric(
+                "Projected utilization",
+                f"{proj_util * 100:.1f}%" if proj_util is not None else "N/A",
+            )
+            if lim is not None and projected is not None:
+                meter = min(max(float(projected) / float(lim), 0.0), 1.5)
+                st.caption("Projected vs limit (capped display at 150%)")
+                st.progress(min(meter, 1.0))
+        elif predict_error:
+            st.warning(predict_error)
+
         render_monthly_category_trend(
             tx,
             client_id=selected_client_id,
             top_n=8,
             key=f"monthly_category_trend_overview_{selected_client_id}",
         )
+
+    with tab_forecast:
+        st.subheader("Discretionary runway forecast")
+        if predict_error:
+            st.warning(predict_error)
+        elif prediction is None:
+            st.info("No prediction available.")
+        else:
+            projected = prediction.get("predicted_month_end_discretionary_spend_usd")
+            mtd = prediction.get("mtd_discretionary_spend_usd")
+            remaining = prediction.get("remaining_budget_usd")
+            days_left = prediction.get("days_to_limit_estimate")
+            risk = bool(prediction.get("overspend_risk"))
+
+            f1, f2, f3 = st.columns(3)
+            f1.metric("MTD discretionary", f"${mtd:,.2f}" if mtd is not None else "N/A")
+            f2.metric(
+                "Projected month-end",
+                f"${projected:,.2f}" if projected is not None else "N/A",
+            )
+            f3.metric(
+                "Remaining budget",
+                f"${remaining:,.2f}" if remaining is not None else "N/A",
+            )
+
+            if risk:
+                st.error(
+                    "Overspend risk: projected month-end discretionary spend exceeds the "
+                    f"monthly limit"
+                    + (
+                        f" (${lim:,.2f})."
+                        if lim is not None
+                        else "."
+                    )
+                )
+            else:
+                st.success("On track: projected month-end spend is within the monthly limit.")
+
+            if days_left is None:
+                st.info(
+                    "Days-to-limit is undefined (implied remaining daily spend is ~0, "
+                    "or no breach path from the current forecast)."
+                )
+            elif days_left == 0:
+                st.warning("Limit already reached or breached on a linearized runway basis.")
+            else:
+                st.write(
+                    f"Estimated **{days_left}** day(s) until the discretionary limit is hit "
+                    "at the implied remaining spend rate."
+                )
+
+            metrics = prediction.get("model_metrics") or {}
+            if metrics:
+                st.caption(
+                    "Model holdout MAE: "
+                    f"${metrics.get('mae_test_usd'):,.2f}"
+                    if metrics.get("mae_test_usd") is not None
+                    else "Model metrics available after training."
+                )
+                st.caption(f"Train cutoff day: {metrics.get('cutoff_day', 'n/a')}")
+
+            compare = pd.DataFrame(
+                [
+                    {"label": "MTD actual", "spend_usd": float(mtd or 0.0)},
+                    {
+                        "label": "Projected month-end",
+                        "spend_usd": float(projected or 0.0),
+                    },
+                    {
+                        "label": "Monthly limit",
+                        "spend_usd": float(lim or 0.0),
+                    },
+                ]
+            )
+            fig = px.bar(
+                compare,
+                x="label",
+                y="spend_usd",
+                title=f"Actual vs projected vs limit (Client {selected_client_id})",
+                labels={"label": "", "spend_usd": "USD"},
+            )
+            format_usd_yaxis(fig)
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                key=f"forecast_compare_{selected_client_id}",
+            )
 
     with tab_transactions:
         col_a, col_b, col_c = st.columns([2, 2, 2])
@@ -258,21 +468,11 @@ def main() -> None:
             key=f"monthly_category_trend_patterns_{selected_client_id}",
         )
 
-        by_dow = patterns.get("by_day_of_week_usd", {})
-        if by_dow:
-            df_dow = pd.DataFrame([{"day": k, "spend_usd": v} for k, v in by_dow.items()])
-            fig = px.bar(
-                df_dow,
-                x="day",
-                y="spend_usd",
-                title=f"Spend by Day of Week (Client {selected_client_id})",
-                labels={"day": "Day of week", "spend_usd": "Spend (USD)"},
-            )
-            format_usd_yaxis(fig)
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-            )
+        render_avg_daily_spend_by_dow(
+            tx,
+            client_id=selected_client_id,
+            key=f"avg_daily_spend_dow_{selected_client_id}",
+        )
 
         tm = patterns.get("top_merchants_usd", [])
         if tm:
