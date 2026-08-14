@@ -35,6 +35,9 @@ DISCRETIONARY_CATEGORIES = {
     "Subscriptions",
 }
 
+# Kept identical when overlaying LLM labels — only these count toward MTD discretionary /
+# utilization / runway. LLM-only labels like Healthcare/Housing/Transportation stay non-discretionary.
+
 
 def project_root(start: Path | None = None) -> Path:
     current = (start or Path.cwd()).resolve()
@@ -76,6 +79,78 @@ def mcc_to_category(mcc_code: Any, mcc_description: Any) -> str:
 
 def is_discretionary(category: str) -> bool:
     return category in DISCRETIONARY_CATEGORIES
+
+
+def transaction_categories_path(client_id: int, *, root: Path | None = None) -> Path:
+    """Preferred per-client LLM categorize artifact path."""
+    return artifacts_dir(root) / f"transaction_categories_{int(client_id)}.jsonl"
+
+
+@lru_cache(maxsize=64)
+def _load_category_overrides_cached(
+    client_id: int, path_str: str, mtime_ns: int
+) -> tuple[tuple[str, str, str | None], ...]:
+    """Return immutable rows: (transaction_id, category, source)."""
+    path = Path(path_str)
+    rows: list[tuple[str, str, str | None]] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            if "client_id" in obj and str(obj.get("client_id")) != str(client_id):
+                continue
+            tx_id = obj.get("id")
+            category = obj.get("category")
+            if tx_id is None or category is None:
+                continue
+            source = obj.get("source")
+            rows.append((str(tx_id), str(category), None if source is None else str(source)))
+    return tuple(rows)
+
+
+def load_transaction_category_overrides(
+    client_id: int, *, root: Path | None = None
+) -> dict[str, dict[str, str | None]]:
+    """Load id → {category, source} from categorize artifacts (empty if missing)."""
+    root = root or project_root()
+    path = transaction_categories_path(client_id, root=root)
+    if not path.exists():
+        # All-users file (optional)
+        path = artifacts_dir(root) / "transaction_categories.jsonl"
+        if not path.exists():
+            return {}
+
+    rows = _load_category_overrides_cached(int(client_id), str(path), path.stat().st_mtime_ns)
+    out: dict[str, dict[str, str | None]] = {}
+    for tx_id, category, source in rows:
+        # For the all-users file, rows for other clients may be present; filter above.
+        out[tx_id] = {"category": category, "source": source}
+    return out
+
+
+def apply_category_overrides(
+    df: pd.DataFrame,
+    overrides: dict[str, dict[str, str | None]],
+) -> pd.DataFrame:
+    """Prefer LLM/artifact categories by transaction id; keep MCC where missing."""
+    work = df.copy()
+    if "id" not in work.columns:
+        work["category_source"] = "mcc"
+        work["is_discretionary"] = work["category"].map(is_discretionary)
+        return work
+
+    ids = work["id"].astype(str)
+    mapped_cat = ids.map(lambda i: (overrides.get(i) or {}).get("category"))
+    mapped_src = ids.map(lambda i: (overrides.get(i) or {}).get("source"))
+
+    use_override = mapped_cat.notna()
+    work.loc[use_override, "category"] = mapped_cat.loc[use_override].astype(str)
+    work["category_source"] = "mcc"
+    work.loc[use_override, "category_source"] = mapped_src.loc[use_override].fillna("llm_artifact")
+    work["is_discretionary"] = work["category"].map(is_discretionary)
+    return work
 
 
 @lru_cache(maxsize=256)
@@ -131,10 +206,13 @@ def load_transactions_for_client(client_id: int, *, root: Path | None = None) ->
     if "amount_usd" in df.columns:
         df["amount_usd"] = pd.to_numeric(df["amount_usd"], errors="coerce")
 
+    # Baseline: deterministic MCC mapping (always available).
     df["category"] = df.apply(
         lambda r: mcc_to_category(r.get("mcc_code"), r.get("mcc_description")), axis=1
     )
-    df["is_discretionary"] = df["category"].map(is_discretionary)
+    # Overlay: prefer LLM categorize artifact when present for this client.
+    overrides = load_transaction_category_overrides(int(client_id), root=root)
+    df = apply_category_overrides(df, overrides)
     return df
 
 
@@ -223,6 +301,12 @@ def compute_analytics(df: pd.DataFrame, *, as_of_date: pd.Timestamp) -> dict[str
     mtd_discretionary_spend = float(mtd_discretionary["spend_usd"].sum())
     utilization_pct = (mtd_discretionary_spend / monthly_limit) if monthly_limit else None
 
+    category_source_mix: dict[str, int] = {}
+    if "category_source" in work.columns:
+        category_source_mix = {
+            str(k): int(v) for k, v in work["category_source"].value_counts(dropna=False).items()
+        }
+
     budget = {
         "as_of_date": as_of.strftime("%Y-%m-%d"),
         "month_start": month_start.strftime("%Y-%m-%d"),
@@ -230,6 +314,7 @@ def compute_analytics(df: pd.DataFrame, *, as_of_date: pd.Timestamp) -> dict[str
         "mtd_discretionary_spend_usd": mtd_discretionary_spend,
         "utilization_pct": utilization_pct,
         "discretionary_categories": sorted(DISCRETIONARY_CATEGORIES),
+        "category_source_mix": category_source_mix,
     }
 
     return {
@@ -320,3 +405,4 @@ def run_analytics_for_client(
 
 def clear_caches() -> None:
     _scan_all_users_ndjson_for_client.cache_clear()
+    _load_category_overrides_cached.cache_clear()

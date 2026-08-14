@@ -80,7 +80,7 @@ data/ (read-only)
 
 | Product pillar          | Where it lives                                           | Status                                                |
 | ----------------------- | -------------------------------------------------------- | ----------------------------------------------------- |
-| LLM auto-categorization | `data_processing/categorize.ipynb`                       | Done (analytics currently still uses rule-based MCC unless wired to read mapping) |
+| LLM auto-categorization | `data_processing/categorize.ipynb`                       | Done (UI/analytics prefer `transaction_categories_{id}.jsonl`, MCC fallback) |
 | Spending analytics      | `model/analytics_core.py` + `model/analytics.ipynb`      | Done                                                  |
 | Anomaly detection       | predict runway risk (done) / notify thresholds (planned) | Partial                                               |
 | Conversational coaching | `ui/` coach (grounded in artifacts)                      | Planned                                               |
@@ -247,8 +247,8 @@ Placement rules (business-justified):
 
 **Analytics behavior (current):**
 
-- Rule-based MCC category mapping (interim until LLM categorize lands)
-- Discretionary categories drive MTD budget utilization vs `monthly_discretionary_limit_usd`
+- Prefer LLM categorize artifact `transaction_categories_{client_id}.jsonl` by transaction id; otherwise deterministic MCC mapping
+- Discretionary budget still uses only: Dining, Entertainment, Shopping, Travel, Subscriptions (unchanged)
 - UI switching `client_id` re-runs `analytics_core` for that user and refreshes per-client artifacts
 
 **Prediction behavior (current):**

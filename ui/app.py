@@ -424,6 +424,13 @@ def main() -> None:
         f"{len(tx):,} transactions · {min_date} → {max_date} · "
         f"source: `{Path(source_path).name}`"
     )
+    if "category_source" in tx.columns:
+        mix = tx["category_source"].fillna("mcc").value_counts(normalize=True)
+        mix_txt = ", ".join(f"{k} {v * 100:.0f}%" for k, v in mix.items())
+        disc = ", ".join(sorted(analytics_core.DISCRETIONARY_CATEGORIES))
+        st.caption(
+            f"Categories: {mix_txt} · discretionary budget uses only: {disc}"
+        )
 
     as_of = st.date_input(
         "AS_OF_DATE",
@@ -527,7 +534,10 @@ def main() -> None:
                 key=f"category_donut_{selected_client_id}",
             )
             if mtd_category:
-                st.caption("MTD spend by category through AS_OF_DATE.")
+                st.caption(
+                    "MTD spend by category through AS_OF_DATE "
+                    "(LLM labels when `transaction_categories_*.jsonl` exists; else MCC)."
+                )
         with right:
             render_monthly_category_trend(
                 tx,
@@ -660,6 +670,7 @@ def main() -> None:
                 "transaction_dt",
                 "amount_usd",
                 "category",
+                "category_source",
                 "merchant_city",
                 "merchant_state",
                 "mcc_code",
