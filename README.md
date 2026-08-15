@@ -73,7 +73,7 @@ Create a `.env` file in the project root (never commit it):
 ```sh
 LLM_PROVIDER=openai
 LLM_API_KEY=...
-LLM_MODEL=gpt-5.2
+LLM_MODEL=gpt-4o-mini
 OPENAI_BASE_URL=https://your-gateway.example/v1   # required if using a non-OpenAI endpoint / proxy token
 DATA_DIR=data
 ARTIFACTS_DIR=artifacts
