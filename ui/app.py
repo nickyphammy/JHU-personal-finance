@@ -23,11 +23,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import model.analytics_core as analytics_core  # noqa: E402
+import model.coach_core as coach_core  # noqa: E402
 import model.predict_core as predict_core  # noqa: E402
 import model.recommend_core as recommend_core  # noqa: E402
 from importlib import reload  # noqa: E402
 
 reload(analytics_core)  # avoid stale Streamlit imports after backend edits
+reload(coach_core)
 reload(predict_core)
 reload(recommend_core)
 
@@ -39,6 +41,12 @@ run_prediction_for_client = predict_core.run_prediction_for_client
 default_predict_paths = predict_core.default_paths
 generate_recommendations = recommend_core.generate_recommendations
 write_recommendation_feedback = recommend_core.write_feedback
+
+answer_question = coach_core.answer_question
+build_grounded_context = coach_core.build_grounded_context
+load_chat_session = coach_core.load_session
+write_chat_session = coach_core.write_session
+make_openai_chat_call = coach_core.make_openai_chat_call
 
 
 def parse_client_ids(users_df: pd.DataFrame) -> list[int]:
@@ -623,8 +631,8 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001 - surface backend errors in UI
                 predict_error = str(exc)
 
-    tab_overview, tab_forecast, tab_transactions, tab_patterns, tab_mcc = st.tabs(
-        ["Overview", "Forecast", "Transactions", "Patterns", "MCC Breakdown"]
+    tab_overview, tab_forecast, tab_coach, tab_transactions, tab_patterns, tab_mcc = st.tabs(
+        ["Overview", "Forecast", "Coach", "Transactions", "Patterns", "MCC Breakdown"]
     )
 
     with tab_overview:
@@ -833,6 +841,93 @@ def main() -> None:
                 use_container_width=True,
                 key=f"forecast_compare_{selected_client_id}",
             )
+
+    with tab_coach:
+        st.subheader("ClearLedger Real-Time Chat Coach")
+        st.caption("Chat powered by grounded computed values (no fabricated numbers).")
+
+        lim_eff = float(lim) if lim is not None else None
+        mtd = float(budget.get("mtd_discretionary_spend_usd") or 0.0)
+        util = budget.get("utilization_pct")
+        projected = prediction.get("predicted_month_end_discretionary_spend_usd") if prediction else None
+        proj_util = prediction.get("projected_utilization_pct") if prediction else None
+
+        if lim_eff is None:
+            st.warning("No monthly discretionary limit available; coach answers are limited.")
+            lim_eff = 0.0
+
+        ctx = build_grounded_context(
+            client_id=selected_client_id,
+            as_of_date=str(pd.to_datetime(as_of).date()),
+            mtd_spend_usd=float(mtd),
+            limit_usd=float(lim_eff),
+            utilization_pct=(float(util) if util is not None else None),
+            projected_month_end_usd=(float(projected) if projected is not None else None),
+            projected_utilization_pct=(float(proj_util) if proj_util is not None else None),
+        )
+
+        # Header metrics (like the reference screenshot)
+        top = st.columns(3)
+        top[0].metric("MTD Spend", f"${ctx['mtd_discretionary_spend_usd']:,.2f}")
+        top[1].metric("Limit", f"${ctx['monthly_discretionary_limit_usd']:,.2f}")
+        if ctx["predicted_month_end_discretionary_spend_usd"] is not None:
+            top[2].metric(
+                "Projected",
+                f"${ctx['predicted_month_end_discretionary_spend_usd']:,.2f}",
+            )
+        else:
+            top[2].metric("Projected", "N/A")
+
+        u = ctx.get("utilization_pct")
+        pu = ctx.get("projected_utilization_pct")
+        st.caption(
+            f"As of {ctx['as_of_date']} | "
+            + (f"Utilization: {u * 100:.1f}% | " if u is not None else "")
+            + (f"Projected Utilization: {pu * 100:.1f}%" if pu is not None else "")
+        )
+
+        # Conversation state (persisted per client)
+        state_key = f"coach_messages_{selected_client_id}"
+        if state_key not in st.session_state:
+            st.session_state[state_key] = load_chat_session(root, client_id=selected_client_id)
+            if not st.session_state[state_key]:
+                st.session_state[state_key] = [
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"Hi! I’m your finance coach for customer {selected_client_id}. "
+                            "Ask me about limit risk, cuts, projections, or affordability."
+                        ),
+                    }
+                ]
+
+        for m in st.session_state[state_key]:
+            with st.chat_message("assistant" if m["role"] == "assistant" else "user"):
+                st.write(m["content"])
+
+        q = st.chat_input("Ask about your spending…", key=f"coach_input_{selected_client_id}")
+        if q:
+            st.session_state[state_key].append({"role": "user", "content": q})
+
+            llm_call = None
+            llm_error = None
+            try:
+                llm_call = make_openai_chat_call(model=os.environ.get("LLM_MODEL", "gpt-4o-mini"))
+            except Exception as exc:  # noqa: BLE001
+                llm_error = str(exc)
+
+            reply = answer_question(
+                context=ctx,
+                question=q,
+                llm_call=llm_call,
+                history=st.session_state[state_key],
+            )
+            if llm_error and reply.used_llm is False:
+                st.caption(f"LLM unavailable: {llm_error}")
+
+            st.session_state[state_key].append({"role": "assistant", "content": reply.content})
+            write_chat_session(root, client_id=selected_client_id, messages=st.session_state[state_key])
+            st.rerun()
 
     with tab_transactions:
         col_a, col_b, col_c = st.columns([2, 2, 2])

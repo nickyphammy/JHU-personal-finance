@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable
 
 from diskcache import Cache
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
 from model.analytics_core import mcc_to_category
 
@@ -204,15 +204,21 @@ def make_openai_llm_call(
         or None
     )
 
-    from openai import OpenAI  # imported lazily for testability
+    from openai import OpenAI, RateLimitError  # imported lazily for testability
 
     client_kwargs: dict[str, Any] = {"api_key": api_key}
     if resolved_base:
         client_kwargs["base_url"] = resolved_base
     client = OpenAI(**client_kwargs)
 
-    @retry(wait=wait_exponential(multiplier=1, min=1, max=20), stop=stop_after_attempt(4))
-    def _call(tx_batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Retry transient failures only — never burn attempts on hard 429/quota.
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=20),
+        stop=stop_after_attempt(4),
+        retry=retry_if_not_exception_type(RateLimitError),
+        reraise=True,
+    )
+    def _call_once(tx_batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         messages = build_llm_messages(tx_batch)
         try:
             resp = client.chat.completions.create(
@@ -230,6 +236,17 @@ def make_openai_llm_call(
 
         content = resp.choices[0].message.content or ""
         return parse_llm_results(content)
+
+    def _call(tx_batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        try:
+            return _call_once(tx_batch)
+        except RateLimitError as exc:
+            raise RuntimeError(
+                "LLM quota/rate limit exceeded (HTTP 429). "
+                "API key and base URL are reachable, but this gateway has no remaining quota. "
+                "Wait for reset or switch keys; dashboard/recommend/predict do not need live LLM. "
+                f"Details: {exc}"
+            ) from exc
 
     return _call
 
