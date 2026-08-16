@@ -24,12 +24,14 @@ if str(ROOT) not in sys.path:
 
 import model.analytics_core as analytics_core  # noqa: E402
 import model.coach_core as coach_core  # noqa: E402
+import model.notify_core as notify_core  # noqa: E402
 import model.predict_core as predict_core  # noqa: E402
 import model.recommend_core as recommend_core  # noqa: E402
 from importlib import reload  # noqa: E402
 
 reload(analytics_core)  # avoid stale Streamlit imports after backend edits
 reload(coach_core)
+reload(notify_core)
 reload(predict_core)
 reload(recommend_core)
 
@@ -40,7 +42,9 @@ run_analytics_for_client = analytics_core.run_analytics_for_client
 run_prediction_for_client = predict_core.run_prediction_for_client
 default_predict_paths = predict_core.default_paths
 generate_recommendations = recommend_core.generate_recommendations
-write_recommendation_feedback = recommend_core.write_feedback
+run_notifications_for_client = notify_core.run_notifications_for_client
+threshold_status = notify_core.threshold_status
+DEFAULT_NOTIFY_THRESHOLDS = notify_core.DEFAULT_THRESHOLDS
 
 answer_question = coach_core.answer_question
 build_grounded_context = coach_core.build_grounded_context
@@ -684,15 +688,86 @@ def main() -> None:
         elif predict_error:
             st.warning(predict_error)
 
-        st.subheader("Recommendations")
         recs = generate_recommendations(
             tx,
             client_id=selected_client_id,
             as_of_date=pd.to_datetime(as_of).date(),
             monthly_limit_usd=float(lim) if lim is not None else None,
             root=root,
-            max_recommendations=3,
+            max_recommendations=2,
         )
+
+        st.subheader("Alerts & notifications")
+        util_now = budget.get("utilization_pct")
+        proj_util = (prediction or {}).get("projected_utilization_pct")
+        status_rows = threshold_status(
+            util_now,
+            projected_utilization_pct=proj_util,
+            thresholds=DEFAULT_NOTIFY_THRESHOLDS,
+        )
+
+        util_txt = f"{util_now * 100:.1f}%" if util_now is not None else "N/A"
+        proj_txt = f"{proj_util * 100:.1f}%" if proj_util is not None else "N/A"
+        st.caption(
+            f"Budget thresholds: 70% / 85% / 95%. "
+            f"Current MTD utilization: {util_txt} · projected: {proj_txt}."
+        )
+
+        cols = st.columns(len(status_rows) or 1)
+        for col, row in zip(cols, status_rows):
+            with col:
+                if row["status"] == "crossed":
+                    st.error(f"**{row['label']}** — past threshold")
+                elif row["status"] == "projected":
+                    st.warning(f"**{row['label']}** — projected to pass")
+                else:
+                    st.success(f"**{row['label']}** — not yet reached")
+
+        notify_result = run_notifications_for_client(
+            selected_client_id,
+            root=root,
+            as_of_date=as_of,
+            budget=budget,
+            prediction=prediction or {},
+            recommendations=recs,
+            write_artifact=True,
+        )
+        app_events = notify_result.get("app_events") or []
+        threshold_events = [e for e in app_events if e.kind == "budget_threshold"]
+        other_events = [e for e in app_events if e.kind != "budget_threshold"]
+
+        if threshold_events:
+            st.markdown("##### Threshold alerts")
+            for ev in threshold_events:
+                body = f"**{ev.title}**  \n{ev.message}"
+                if ev.severity == "critical":
+                    st.error(body)
+                elif ev.severity == "warning":
+                    st.warning(body)
+                else:
+                    st.info(body)
+        else:
+            st.info(
+                "No threshold crossed yet. Alerts appear here once MTD or projected "
+                "utilization reaches 70%, 85%, or 95%."
+            )
+
+        if other_events:
+            st.markdown("##### Other notifications")
+            st.caption(
+                "Channels: app (shown here) + email payload recorded in "
+                f"`artifacts/events_{selected_client_id}.jsonl`."
+            )
+            for ev in other_events:
+                body = f"**{ev.title}**  \n{ev.message}"
+                if ev.severity == "critical":
+                    st.error(body)
+                elif ev.severity == "warning":
+                    st.warning(body)
+                else:
+                    st.info(body)
+
+        st.subheader("Recommendations")
         if not recs:
             st.info("No recommendations available yet for this client/date.")
         else:
@@ -705,33 +780,6 @@ def main() -> None:
                         )
                     st.write(rec.action)
                     st.caption(rec.rationale)
-                    b1, b2 = st.columns(2)
-                    if b1.button(
-                        "Accept",
-                        key=f"rec_accept_{selected_client_id}_{rec.rec_id}",
-                        use_container_width=True,
-                    ):
-                        write_recommendation_feedback(
-                            root,
-                            client_id=selected_client_id,
-                            rec_id=rec.rec_id,
-                            status="accepted",
-                        )
-                        st.success("Saved feedback. Refreshing…")
-                        st.rerun()
-                    if b2.button(
-                        "Dismiss",
-                        key=f"rec_dismiss_{selected_client_id}_{rec.rec_id}",
-                        use_container_width=True,
-                    ):
-                        write_recommendation_feedback(
-                            root,
-                            client_id=selected_client_id,
-                            rec_id=rec.rec_id,
-                            status="dismissed",
-                        )
-                        st.success("Saved feedback. Refreshing…")
-                        st.rerun()
 
         left, right = st.columns([1.15, 1.35], gap="large")
         with left:

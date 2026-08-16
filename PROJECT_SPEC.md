@@ -98,6 +98,7 @@ Inputs are read only from `data/`. All derived outputs are written as flat files
 │   ├── runway_{client_id}.json
 │   ├── monthly_limit_overrides.json
 │   ├── recommendation_feedback_{client_id}.json
+│   ├── events_{client_id}.jsonl
 │   └── session_{client_id}.json
 ├── data_processing/
 │   ├── validate_schema.ipynb
@@ -111,6 +112,7 @@ Inputs are read only from `data/`. All derived outputs are written as flat files
 │   ├── predict.ipynb
 │   ├── recommend_core.py
 │   ├── coach_core.py
+│   ├── notify_core.py
 │   └── notify.ipynb
 ├── ui/
 │   └── app.py
@@ -121,6 +123,7 @@ Inputs are read only from `data/`. All derived outputs are written as flat files
 │   ├── categorize_tests.ipynb
 │   ├── recommend_tests.ipynb
 │   ├── coach_tests.ipynb
+│   ├── notify_tests.ipynb
 │   ├── llm_connection_tests.ipynb
 │   ├── llm_connection_smoke.ipynb
 │   └── ui_tests.ipynb
@@ -192,7 +195,7 @@ Inputs are read only from `data/`. All derived outputs are written as flat files
 | Analytics              | `model/analytics_core.py` + `analytics.ipynb`                             | Category spend, budget utilization, spending patterns; prefers LLM labels with MCC fallback            | `spend_by_category_{id}.json`, `budget_utilization_{id}.json`, `spending_patterns_{id}.json`              |
 | Prediction             | `model/predict_core.py` + `predict.ipynb`                                 | Regression on discretionary history → projected month-end spend, overspend risk, days-to-limit         | `runway_model.pkl`, `runway_model_metrics.json`, `runway_{id}.json`                                       |
 | Recommendations        | `model/recommend_core.py`                                                 | Ranked category/merchant spend-cut suggestions + accept/dismiss feedback                               | `recommendation_feedback_{id}.json`                                                                       |
-| Notifications          | `model/notify.ipynb`                                                      | Budget threshold alerts (70/85/95)                                                                     | `events_{id}.jsonl`                                                                                       |
+| Notifications          | `model/notify_core.py` + `notify.ipynb`                                   | Budget threshold alerts (70/85/95), overspend/runway warnings, tips; app + email channel payloads       | `events_{id}.jsonl`                                                                                       |
 | Coach                  | `model/coach_core.py` + `ui/app.py` Coach tab                             | Multi-turn grounded chat with prediction/recommendation context and per-client session memory          | `session_{id}.json`                                                                                       |
 | UI                     | `ui/app.py`                                                               | Streamlit dashboard + forecast + recommendations + coach                                               | Reads/triggers analytics, runway, limit overrides, session artifacts                                      |
 | Tests                  | `tests/*.ipynb`                                                           | Unit tests for clean, analytics, predict, categorize, recommend, coach, UI; live LLM connection checks | Console PASS / fail                                                                                       |
@@ -231,7 +234,7 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 - [ ] Chat interface (user 1696): multi-turn coach with stateful memory; MTD Spend / Limit / Projected shown; prediction and ranked recommendations injected as grounded coach context.
 - [x] LLM categorization with MCC fallback + disk cache.
 - [x] Ranked, category-level spending reduction recommendations surfaced in the dashboard.
-- [x] Validation hooks / unit tests for clean, analytics, predict, categorize, recommend, coach, and UI.
+- [x] Validation hooks / unit tests for clean, analytics, predict, categorize, recommend, coach, notify, and UI.
 
 ## Implementation Checklist
 
@@ -243,5 +246,5 @@ When the LLM is unavailable, configuration must force the documented fallback pa
 - [x] Ranked recommendation engine for category/merchant cutbacks (`recommend_core.py`) surfaced in the dashboard.
 - [x] Multi-turn grounded coach with per-client session memory (`coach_core.py` + Coach tab).
 - [ ] Inject days-to-limit and ranked recommendations into the coach grounded context (required by the write-up).
-- [ ] Notification / threshold alerts (70/85/95 budget utilization) for the architecture’s notification stage.
+- [x] Notification / threshold alerts (70/85/95) + tips with app/email channel payloads (`notify_core.py`, Overview Alerts).
 - [x] Unit tests for each core module under `tests/`.

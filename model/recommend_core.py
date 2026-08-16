@@ -173,10 +173,12 @@ def detect_top_category_merchant(
     as_of_date: date,
     lookback_days: int = 90,
     discretionary_only: bool = True,
+    category_rank: int = 0,
+    exclude_categories: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Find the highest-spend category and, within it, the top merchant.
+    """Find a high-impact discretionary category and its top merchant.
 
-    Used to recommend a targeted cutback (category + merchant), not just a vague category cap.
+    `category_rank=0` is the highest-spend category, `1` is second, etc.
     """
     required = ["transaction_dt", "amount_usd", "category", "merchant_id"]
     _ensure_cols(tx, required)
@@ -211,12 +213,19 @@ def detect_top_category_merchant(
         if work.empty:
             return None
 
+    if exclude_categories:
+        work = work.loc[~work["category"].isin(exclude_categories)].copy()
+        if work.empty:
+            return None
+
     by_cat = work.groupby("category", dropna=False)["spend_usd"].sum().sort_values(ascending=False)
-    if by_cat.empty or float(by_cat.iloc[0]) <= 0:
+    if by_cat.empty or len(by_cat) <= int(category_rank):
+        return None
+    if float(by_cat.iloc[int(category_rank)]) <= 0:
         return None
 
-    top_category = str(by_cat.index[0])
-    category_spend = float(by_cat.iloc[0])
+    top_category = str(by_cat.index[int(category_rank)])
+    category_spend = float(by_cat.iloc[int(category_rank)])
     cat_rows = work.loc[work["category"] == top_category].copy()
 
     by_merch = (
@@ -259,6 +268,55 @@ def detect_top_category_merchant(
     }
 
 
+def _cutback_recommendation(
+    *,
+    client_id: int,
+    hit: dict[str, Any],
+    fb: dict[str, dict[str, Any]],
+) -> Recommendation | None:
+    category = str(hit["category"])
+    merchant_id = str(hit["merchant_id"])
+    rec_id = _stable_id("cutback_top_category_merchant", str(client_id), category, merchant_id)
+    if (fb.get(rec_id) or {}).get("status") == "dismissed":
+        return None
+
+    place_bits = [merchant_id]
+    if hit.get("merchant_city"):
+        place_bits.append(str(hit["merchant_city"]))
+    if hit.get("merchant_state"):
+        place_bits.append(str(hit["merchant_state"]))
+    place = " / ".join(place_bits)
+    share_pct = float(hit["merchant_share_of_category"]) * 100.0
+    months = max(float(hit["lookback_days"]) / 30.0, 1.0)
+    monthly_merchant = float(hit["merchant_spend_usd"]) / months
+
+    return Recommendation(
+        rec_id=rec_id,
+        title=f"Cut {category} spend at your top merchant",
+        action=(
+            f"Reduce visits or ticket size at `{place}` "
+            f"(~${monthly_merchant:,.2f}/mo in {category})."
+        ),
+        rationale=(
+            f"In the last ~{int(hit['lookback_days'])} days, `{category}` is a top "
+            f"discretionary category (${float(hit['category_spend_usd']):,.2f}). "
+            f"Merchant `{merchant_id}` alone is ${float(hit['merchant_spend_usd']):,.2f} "
+            f"({share_pct:.0f}% of that category)."
+        ),
+        estimated_monthly_savings_usd=float(hit["estimated_monthly_savings_usd"]),
+        rule="cutback_top_category_merchant",
+        meta={
+            "category": category,
+            "merchant_id": merchant_id,
+            "merchant_city": hit.get("merchant_city"),
+            "merchant_state": hit.get("merchant_state"),
+            "category_spend_usd": float(hit["category_spend_usd"]),
+            "merchant_spend_usd": float(hit["merchant_spend_usd"]),
+            "lookback_days": int(hit["lookback_days"]),
+        },
+    )
+
+
 @dataclass(frozen=True)
 class Recommendation:
     rec_id: str
@@ -277,13 +335,14 @@ def generate_recommendations(
     as_of_date: date,
     monthly_limit_usd: float | None,
     root: Path,
-    max_recommendations: int = 3,
+    max_recommendations: int = 2,
 ) -> list[Recommendation]:
-    """Return up to N actionable spend-cut recommendations, filtered by feedback.
+    """Return up to two personalized action recommendations, filtered by feedback.
 
-    Only two rule families are emitted:
-    - costly recurring subscriptions
-    - cut back at the top merchant in the highest discretionary category
+    Preference order:
+    1. pause/cancel the costliest recurring subscription (if any)
+    2. cut back at the top merchant in the highest discretionary category
+    3. if still short of two, add the next discretionary category cutback
 
     `monthly_limit_usd` is accepted for API compatibility with the UI but is not used
     to invent generic “lower your limit” tips.
@@ -295,8 +354,7 @@ def generate_recommendations(
 
     recurring = detect_recurring_merchants(tx, as_of_date=as_of_date)
     if not recurring.empty:
-        # Costly recurring subscriptions first (already sorted by avg monthly spend desc).
-        top_sub = recurring.loc[recurring["is_subscription"] == True].head(3)  # noqa: E712
+        top_sub = recurring.loc[recurring["is_subscription"] == True].head(1)  # noqa: E712
         for _, r in top_sub.iterrows():
             merchant_id = str(r["merchant_id"])
             avg_monthly = float(r["avg_monthly_spend_usd"])
@@ -306,11 +364,14 @@ def generate_recommendations(
             recs.append(
                 Recommendation(
                     rec_id=rec_id,
-                    title="Review costly recurring subscription",
-                    action="Cancel, pause, or downgrade if unused.",
+                    title="Pause or cancel your top subscription",
+                    action=(
+                        f"Cancel, pause, or downgrade merchant `{merchant_id}` "
+                        f"(~${avg_monthly:,.2f}/mo)."
+                    ),
                     rationale=(
-                        f"Merchant `{merchant_id}` shows recurring monthly spend across "
-                        f"{int(r['active_months'])} month(s) (avg ${avg_monthly:,.2f}/mo)."
+                        f"This merchant shows recurring monthly spend across "
+                        f"{int(r['active_months'])} month(s)."
                     ),
                     estimated_monthly_savings_usd=avg_monthly,
                     rule="recurring_subscription",
@@ -318,51 +379,27 @@ def generate_recommendations(
                 )
             )
 
-    # Top discretionary category + highest-spend merchant within it
-    if len(recs) < max_recommendations:
-        hit = detect_top_category_merchant(tx, as_of_date=as_of_date, lookback_days=90)
-        if hit is not None:
-            category = str(hit["category"])
-            merchant_id = str(hit["merchant_id"])
-            rec_id = _stable_id("cutback_top_category_merchant", str(client_id), category, merchant_id)
-            if (fb.get(rec_id) or {}).get("status") != "dismissed":
-                place_bits = [merchant_id]
-                if hit.get("merchant_city"):
-                    place_bits.append(str(hit["merchant_city"]))
-                if hit.get("merchant_state"):
-                    place_bits.append(str(hit["merchant_state"]))
-                place = " / ".join(place_bits)
-                share_pct = float(hit["merchant_share_of_category"]) * 100.0
-                recs.append(
-                    Recommendation(
-                        rec_id=rec_id,
-                        title=f"Cut back {category} at your top merchant",
-                        action=(
-                            f"Reduce visits or ticket size at merchant `{place}` "
-                            f"(your largest {category} merchant)."
-                        ),
-                        rationale=(
-                            f"In the last ~{int(hit['lookback_days'])} days, `{category}` is your "
-                            f"highest discretionary category (${float(hit['category_spend_usd']):,.2f}). "
-                            f"Merchant `{merchant_id}` alone is ${float(hit['merchant_spend_usd']):,.2f} "
-                            f"({share_pct:.0f}% of that category)."
-                        ),
-                        estimated_monthly_savings_usd=float(hit["estimated_monthly_savings_usd"]),
-                        rule="cutback_top_category_merchant",
-                        meta={
-                            "category": category,
-                            "merchant_id": merchant_id,
-                            "merchant_city": hit.get("merchant_city"),
-                            "merchant_state": hit.get("merchant_state"),
-                            "category_spend_usd": float(hit["category_spend_usd"]),
-                            "merchant_spend_usd": float(hit["merchant_spend_usd"]),
-                            "lookback_days": int(hit["lookback_days"]),
-                        },
-                    )
-                )
+    used_categories: set[str] = set()
+    rank = 0
+    while len(recs) < min(2, int(max_recommendations)) and rank < 5:
+        hit = detect_top_category_merchant(
+            tx,
+            as_of_date=as_of_date,
+            lookback_days=90,
+            category_rank=rank,
+            exclude_categories=used_categories,
+        )
+        rank += 1
+        if hit is None:
+            continue
+        rec = _cutback_recommendation(client_id=client_id, hit=hit, fb=fb)
+        if rec is None:
+            used_categories.add(str(hit["category"]))
+            continue
+        used_categories.add(str(hit["category"]))
+        recs.append(rec)
 
-    # Enforce max and keep most impactful first (estimated savings desc)
     allowed = {"recurring_subscription", "cutback_top_category_merchant"}
     recs = [r for r in recs if r.rule in allowed]
     recs = sorted(recs, key=lambda r: r.estimated_monthly_savings_usd, reverse=True)
-    return recs[: int(max_recommendations)]
+    return recs[: min(2, int(max_recommendations))]
